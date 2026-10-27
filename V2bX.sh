@@ -96,7 +96,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh)
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/install.sh)
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -112,7 +112,7 @@ update() {
     else
         version=$2
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh) $version
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/install.sh) $version
     if [[ $? == 0 ]]; then
         echo -e "${green}更新完成，已自动重启 V2bX，请使用 V2bX log 查看运行日志${plain}"
         exit
@@ -300,13 +300,17 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/V2bX.sh
     if [[ $? != 0 ]]; then
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"
         before_show_menu
     else
         chmod +x /usr/bin/V2bX
+        if [[ -d /usr/local/V2bX ]]; then
+            curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/anytls_manager.py || echo -e "${yellow}AnyTLS 管理工具下载失败，请稍后重试${plain}"
+            curl -fLsS --retry 3 -o /usr/local/V2bX/hy2_pin_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/hy2_pin_manager.py || echo -e "${yellow}HY2 证书管理器下载失败，请稍后重试${plain}"
+        fi
         echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
     fi
 }
@@ -422,196 +426,295 @@ show_V2bX_version() {
     fi
 }
 
-add_node_config() {
-    echo -e "${green}请选择节点核心类型：${plain}"
-    echo -e "${green}1. xray${plain}"
-    echo -e "${green}2. singbox${plain}"
-    echo -e "${green}3. hysteria2${plain}"
-    read -rp "请输入：" core_type
-    if [ "$core_type" == "1" ]; then
-        core="xray"
-        core_xray=true
-    elif [ "$core_type" == "2" ]; then
-        core="sing"
-        core_sing=true
-    elif [ "$core_type" == "3" ]; then
-        core="hysteria2"
-        core_hysteria2=true
-    else
-        echo "无效的选择。请选择 1 2 3。"
-        continue
+
+# Check an ASCII TLS hostname before using it in certificate paths and JSON.
+valid_tls_domain() {
+    local domain="$1" label
+    local -a parts=()
+    [[ "${#domain}" -le 253 && "$domain" == *.* && "$domain" != *..* ]] || return 1
+    IFS='.' read -r -a parts <<< "$domain"
+    for label in "${parts[@]}"; do
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
+valid_tls_email() {
+    [[ "$1" =~ ^[A-Za-z0-9._%+~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
+}
+
+# Called by add_node_config. Variables are dynamically scoped to that function.
+configure_node_tls() {
+    local selection cf_token
+    echo -e "${yellow}请选择 TLS 证书方式：${plain}"
+    echo -e "${green}1. Let's Encrypt HTTP-01（默认，启动后自动申请和续期）${plain}"
+    echo -e "${green}2. Let's Encrypt DNS-01（Cloudflare API Token，支持 NAT）${plain}"
+    echo -e "${green}3. self 自签名证书（仅测试，客户端需单独信任）${plain}"
+    echo -e "${green}4. 使用已有证书文件（不自动续期）${plain}"
+    if [[ "$NodeType" == "hysteria2" ]]; then
+        echo -e "${green}5. 自签名 + SHA256 固定证书（自动生成或复用）${plain}"
     fi
     while true; do
-        read -rp "请输入节点Node ID：" NodeID
-        # 判断NodeID是否为正整数
-        if [[ "$NodeID" =~ ^[0-9]+$ ]]; then
-            break  # 输入正确，退出循环
-        else
-            echo "错误：请输入正确的数字作为Node ID。"
-        fi
+        read -r -p "请选择证书方式（默认 1）：" selection || return 1
+        selection="${selection:-1}"
+        case "$selection" in
+            1) certmode="http"; break ;;
+            2) certmode="dns"; break ;;
+            3) certmode="self"; break ;;
+            4) certmode="file"; break ;;
+            5) if [[ "$NodeType" == "hysteria2" ]]; then
+                   certmode="file"; hy2_pin_enabled=true; break
+               fi
+               echo "只有 hysteria2 可选择选项 5。" ;;
+            *) echo "选择无效，请输入 1-4。" ;;
+        esac
     done
 
-    if [ "$core_hysteria2" = true ] && [ "$core_xray" = false ] && [ "$core_sing" = false ]; then
+    while true; do
+        read -r -p "请输入 TLS 证书域名（例如 node.example.com）：" certdomain || return 1
+        certdomain="${certdomain,,}"
+        if valid_tls_domain "$certdomain"; then break; fi
+        echo -e "${red}域名无效：请填写有 DNS 解析的完整域名，不含 https:// 和端口。${plain}"
+    done
+
+    if [[ "${hy2_pin_enabled:-false}" == "true" ]]; then
+        local helper="/usr/local/V2bX/hy2_pin_manager.py"
+        if [[ ! -f "$helper" ]]; then
+            helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/hy2_pin_manager.py"
+        fi
+        if [[ ! -f "$helper" ]]; then echo -e "${red}找不到 HY2 证书管理器，请更新安装脚本。${plain}"; return 1; fi
+        if ! command -v openssl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+            echo -e "${red}需要 openssl 和 python3${plain}"; return 1
+        fi
+        local hy2_sni hy2_host hy2_port hy2_mport
+        read -r -p "客户端 SNI（回车默认证书域名）：" hy2_sni || return 1
+        hy2_sni="${hy2_sni:-$certdomain}"
+        read -r -p "公网 NAT/DDNS 连接域名（可留空）：" hy2_host || return 1
+        read -r -p "公网 UDP 连接端口（可留空）：" hy2_port || return 1
+        read -r -p "已映射的 mport UDP 端口范围（可留空）：" hy2_mport || return 1
+        if ! python3 "$helper" issue --domain "$certdomain" --sni "$hy2_sni" --host "$hy2_host" --port "$hy2_port" --mport "$hy2_mport"; then
+            echo -e "${red}证书生成/校验失败，取消添加节点。${plain}"; return 1
+        fi
+        certmode="file"
+        certfile="/etc/V2bX/certs/hy2/$certdomain/cert.pem"
+        keyfile="/etc/V2bX/certs/hy2/$certdomain/key.pem"
+        echo -e "${yellow}请将 Xboard SNI 同步设为 $hy2_sni，并确保订阅下发 pinSHA256。${plain}"
+        return 0
+    fi
+    if [[ "$certmode" == "file" ]]; then
+        while true; do
+            read -r -p "请输入现有 fullchain.pem/cert 文件绝对路径：" certfile || return 1
+            read -r -p "请输入现有私钥文件绝对路径：" keyfile || return 1
+            if [[ "$certfile" =~ ^/[A-Za-z0-9._/-]+$ && "$keyfile" =~ ^/[A-Za-z0-9._/-]+$ && -r "$certfile" && -r "$keyfile" ]]; then
+                break
+            fi
+            echo -e "${red}证书路径必须是可读取的绝对路径，且不含空格或特殊字符。${plain}"
+        done
+        echo "将使用已有证书，不会调用 Let's Encrypt 申请或续期。"
+        return 0
+    fi
+
+    certfile="/etc/V2bX/certs/$certdomain/fullchain.cer"
+    keyfile="/etc/V2bX/certs/$certdomain/privkey.pem"
+    # lego upstream saves the ACME account and certificate key with permissive
+    # file modes: protect their parent directory before the service starts.
+    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
+        while true; do
+            read -r -p "请输入 Let's Encrypt 联系邮箱：" certemail || return 1
+            if valid_tls_email "$certemail"; then break; fi
+            echo -e "${red}邮箱格式无效，请重新输入。${plain}"
+        done
+    fi
+
+    if [[ "$certmode" == "http" ]]; then
+        echo -e "${yellow}注意：HTTP-01 要求域名指向本节点，公网 TCP/80 可直接访问本机 80 端口。${plain}"
+        echo -e "${yellow}NAT/DDNS 仅映射高位端口时不能使用 HTTP-01，请改选 DNS-01。${plain}"
+        if command -v ss >/dev/null 2>&1 && [[ -n "$(ss -H -ltn 'sport = :80' 2>/dev/null)" ]]; then
+            echo -e "${red}警告：检测到本机 TCP/80 正在监听，V2bX 的 HTTP-01 申请可能因端口冲突失败！${plain}"
+        fi
+        if command -v getent >/dev/null 2>&1 && ! getent ahostsv4 "$certdomain" >/dev/null 2>&1; then
+            echo -e "${yellow}提示：未检测到域名的 IPv4 解析。请确认 DNS 后再启动 V2bX。${plain}"
+        fi
+    elif [[ "$certmode" == "dns" ]]; then
+        certprovider="cloudflare"
+        echo -e "${yellow}需要 Cloudflare DNS 区域权限：Zone:Read、DNS:Edit。Token 将以明文写入仅 root 可读的 config.json。${plain}"
+        while true; do
+            read -r -s -p "请输入 CLOUDFLARE_DNS_API_TOKEN（隐藏输入）：" cf_token || return 1
+            echo
+            if [[ "$cf_token" =~ ^[A-Za-z0-9_-]+$ ]]; then break; fi
+            echo -e "${red}Token 格式无效，不能留空或包含空格/引号。${plain}"
+        done
+        certdnsenv="{\"CLOUDFLARE_DNS_API_TOKEN\":\"$cf_token\"}"
+        unset cf_token
+    elif [[ "$certmode" == "self" ]]; then
+        echo -e "${yellow}自签名证书仅用于测试环境，不属于 Let's Encrypt。${plain}"
+    fi
+    # Do not create the cert folder if user selected existing certificate.
+    if ! mkdir -p "/etc/V2bX/certs/$certdomain"; then
+        echo -e "${red}证书目录无法创建。${plain}"
+        return 1
+    fi
+    chmod 0700 "/etc/V2bX/certs/$certdomain" || return 1
+    return 0
+}
+
+add_node_config() {
+    local core_type core NodeID NodeType protocol_choice
+    local direct_anytls=false isreality="" istls="" fastopen=true
+    local certmode="none" certdomain="example.com" certemail=""
+    local certfile="/etc/V2bX/fullchain.cer" keyfile="/etc/V2bX/cert.key"
+    local certprovider="" certdnsenv="{}" hy2_line=""
+    local hy2_pin_enabled=false
+
+    while true; do
+        echo -e "${green}请选择节点核心类型：${plain}"
+        echo -e "${green}1. xray${plain}"
+        echo -e "${green}2. singbox${plain}"
+        echo -e "${green}3. hysteria2${plain}"
+        echo -e "${green}4. AnyTLS (sing-box 核心，一键配置)${plain}"
+        read -r -p "请输入 [1-4]：" core_type || return 1
+        case "$core_type" in
+            1) core="xray"; core_xray=true; break ;;
+            2) core="sing"; core_sing=true; break ;;
+            3) core="hysteria2"; core_hysteria2=true; break ;;
+            4) core="sing"; core_type="2"; core_sing=true; direct_anytls=true; break ;;
+            *) echo "无效选择，请输入 1-4。" ;;
+        esac
+    done
+
+    while true; do
+        read -r -p "请输入 Xboard 节点 Node ID：" NodeID || return 1
+        if [[ "$NodeID" =~ ^[1-9][0-9]*$ && "${#NodeID}" -le 10 ]] && (( NodeID <= 2147483647 )); then
+            break
+        fi
+        echo "请输入有效的正整数 Node ID。"
+    done
+
+    if [[ "$direct_anytls" == "true" ]]; then
+        NodeType="anytls"
+    elif [[ "$core_type" == "3" ]]; then
         NodeType="hysteria2"
     else
-        echo -e "${yellow}请选择节点传输协议：${plain}"
-        echo -e "${green}1. Shadowsocks${plain}"
-        echo -e "${green}2. Vless${plain}"
-        echo -e "${green}3. Vmess${plain}"
-        if [ "$core_sing" == true ]; then
-            echo -e "${green}4. Hysteria${plain}"
-            echo -e "${green}5. Hysteria2${plain}"
-        fi
-        if [ "$core_hysteria2" == true ] && [ "$core_sing" = false ]; then
-            echo -e "${green}5. Hysteria2${plain}"
-        fi
-        echo -e "${green}6. Trojan${plain}"  
-        if [ "$core_sing" == true ]; then
-            echo -e "${green}7. Tuic${plain}"
-            echo -e "${green}8. AnyTLS${plain}"
-        fi
-        read -rp "请输入：" NodeType
-        case "$NodeType" in
-            1 ) NodeType="shadowsocks" ;;
-            2 ) NodeType="vless" ;;
-            3 ) NodeType="vmess" ;;
-            4 ) NodeType="hysteria" ;;
-            5 ) NodeType="hysteria2" ;;
-            6 ) NodeType="trojan" ;;
-            7 ) NodeType="tuic" ;;
-            8 ) NodeType="anytls" ;;
-            * ) NodeType="shadowsocks" ;;
-        esac
+        while true; do
+            echo -e "${yellow}请选择节点传输协议：${plain}"
+            echo -e "${green}1. Shadowsocks  2. Vless  3. Vmess  6. Trojan${plain}"
+            if [[ "$core" == "sing" ]]; then
+                echo -e "${green}4. Hysteria  5. Hysteria2  7. Tuic  8. AnyTLS${plain}"
+            fi
+            read -r -p "请输入：" protocol_choice || return 1
+            case "$protocol_choice" in
+                1) NodeType="shadowsocks" ;;
+                2) NodeType="vless" ;;
+                3) NodeType="vmess" ;;
+                6) NodeType="trojan" ;;
+                4) [[ "$core" == "sing" ]] && NodeType="hysteria" ;;
+                5) [[ "$core" == "sing" ]] && NodeType="hysteria2" ;;
+                7) [[ "$core" == "sing" ]] && NodeType="tuic" ;;
+                8) [[ "$core" == "sing" ]] && NodeType="anytls" ;;
+            esac
+            if [[ -n "$NodeType" ]]; then break; fi
+            echo "当前核心不支持该协议，请重新选择。"
+        done
     fi
-    fastopen=true
-    if [ "$NodeType" == "vless" ]; then
-        read -rp "请选择是否为reality节点？(y/n)" isreality
-    elif [ "$NodeType" == "hysteria" ] || [ "$NodeType" == "hysteria2" ] || [ "$NodeType" == "tuic" ] || [ "$NodeType" == "anytls" ]; then
+
+    if [[ "$NodeType" == "vless" ]]; then
+        read -r -p "是否使用 Reality？(y/N)：" isreality || return 1
+    elif [[ "$NodeType" == "hysteria" || "$NodeType" == "hysteria2" || "$NodeType" == "tuic" || "$NodeType" == "anytls" ]]; then
         fastopen=false
         istls="y"
     fi
-
-    if [[ "$isreality" != "y" && "$isreality" != "Y" &&  "$istls" != "y" ]]; then
-        read -rp "请选择是否进行TLS配置？(y/n)" istls
+    if [[ ! "$isreality" =~ ^[Yy]$ && "$istls" != "y" ]]; then
+        read -r -p "是否启用 TLS？(y/N)：" istls || return 1
+    fi
+    if [[ ! "$isreality" =~ ^[Yy]$ && "$istls" =~ ^[Yy]$ ]]; then
+        configure_node_tls || return 1
     fi
 
-    certmode="none"
-    certdomain="example.com"
-    if [[ "$isreality" != "y" && "$isreality" != "Y" && ( "$istls" == "y" || "$istls" == "Y" ) ]]; then
-        echo -e "${yellow}请选择证书申请模式：${plain}"
-        echo -e "${green}1. http模式自动申请，节点域名已正确解析${plain}"
-        echo -e "${green}2. dns模式自动申请，需填入正确域名服务商API参数${plain}"
-        echo -e "${green}3. self模式，自签证书或提供已有证书文件${plain}"
-        read -rp "请输入：" certmode
-        case "$certmode" in
-            1 ) certmode="http" ;;
-            2 ) certmode="dns" ;;
-            3 ) certmode="self" ;;
-        esac
-        read -rp "请输入节点证书域名(example.com)：" certdomain
-        if [ "$certmode" != "http" ]; then
-            echo -e "${red}请手动修改配置文件后重启V2bX！${plain}"
-        fi
-    fi
-    ipv6_support=$(check_ipv6_support)
-    listen_ip="0.0.0.0"
-    if [ "$ipv6_support" -eq 1 ]; then
+    local listen_ip="0.0.0.0"
+    if [[ "$NodeType" != "anytls" ]] && [[ "$(check_ipv6_support)" == "1" ]]; then
         listen_ip="::"
     fi
-    node_config=""
-    if [ "$core_type" == "1" ]; then 
-    node_config=$(cat <<EOF
+    local node_config=""
+    if [[ "$core" == "xray" ]]; then
+        node_config=$(cat <<EOF
 {
-            "Core": "$core",
-            "ApiHost": "$ApiHost",
-            "ApiKey": "$ApiKey",
-            "NodeID": $NodeID,
-            "NodeType": "$NodeType",
-            "Timeout": 30,
-            "ListenIP": "0.0.0.0",
-            "SendIP": "0.0.0.0",
-            "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
-            "EnableProxyProtocol": false,
-            "EnableUot": true,
-            "EnableTFO": true,
-            "DNSType": "UseIPv4",
-            "CertConfig": {
-                "CertMode": "$certmode",
-                "RejectUnknownSni": false,
-                "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
-                "Email": "v2bx@github.com",
-                "Provider": "cloudflare",
-                "DNSEnv": {
-                    "EnvName": "env1"
-                }
-            }
-        },
+  "Core": "$core",
+  "ApiHost": "$ApiHost",
+  "ApiKey": "$ApiKey",
+  "NodeID": $NodeID,
+  "NodeType": "$NodeType",
+  "Timeout": 30,
+  "ListenIP": "0.0.0.0",
+  "SendIP": "0.0.0.0",
+  "DeviceOnlineMinTraffic": 200,
+  "MinReportTraffic": 0,
+  "EnableProxyProtocol": false,
+  "EnableUot": true,
+  "EnableTFO": true,
+  "DNSType": "UseIPv4",
+  "CertConfig": {
+    "CertMode": "$certmode", "RejectUnknownSni": false,
+    "CertDomain": "$certdomain", "CertFile": "$certfile",
+    "KeyFile": "$keyfile", "Email": "$certemail",
+    "Provider": "$certprovider", "DNSEnv": $certdnsenv
+  }
+},
 EOF
 )
-    elif [ "$core_type" == "2" ]; then
-    node_config=$(cat <<EOF
+    elif [[ "$core" == "sing" ]]; then
+        node_config=$(cat <<EOF
 {
-            "Core": "$core",
-            "ApiHost": "$ApiHost",
-            "ApiKey": "$ApiKey",
-            "NodeID": $NodeID,
-            "NodeType": "$NodeType",
-            "Timeout": 30,
-            "ListenIP": "$listen_ip",
-            "SendIP": "0.0.0.0",
-            "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
-            "TCPFastOpen": $fastopen,
-            "SniffEnabled": true,
-            "CertConfig": {
-                "CertMode": "$certmode",
-                "RejectUnknownSni": false,
-                "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
-                "Email": "v2bx@github.com",
-                "Provider": "cloudflare",
-                "DNSEnv": {
-                    "EnvName": "env1"
-                }
-            }
-        },
+  "Core": "$core",
+  "ApiHost": "$ApiHost",
+  "ApiKey": "$ApiKey",
+  "NodeID": $NodeID,
+  "NodeType": "$NodeType",
+  "Timeout": 30,
+  "ListenIP": "$listen_ip",
+  "SendIP": "0.0.0.0",
+  "DeviceOnlineMinTraffic": 200,
+  "MinReportTraffic": 0,
+  "TCPFastOpen": $fastopen,
+  "SniffEnabled": true,
+  "CertConfig": {
+    "CertMode": "$certmode", "RejectUnknownSni": false,
+    "CertDomain": "$certdomain", "CertFile": "$certfile",
+    "KeyFile": "$keyfile", "Email": "$certemail",
+    "Provider": "$certprovider", "DNSEnv": $certdnsenv
+  }
+},
 EOF
 )
-    elif [ "$core_type" == "3" ]; then
-    node_config=$(cat <<EOF
+    elif [[ "$core" == "hysteria2" ]]; then
+        node_config=$(cat <<EOF
 {
-            "Core": "$core",
-            "ApiHost": "$ApiHost",
-            "ApiKey": "$ApiKey",
-            "NodeID": $NodeID,
-            "NodeType": "$NodeType",
-            "Hysteria2ConfigPath": "/etc/V2bX/hy2config.yaml",
-            "Timeout": 30,
-            "ListenIP": "",
-            "SendIP": "0.0.0.0",
-            "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
-            "CertConfig": {
-                "CertMode": "$certmode",
-                "RejectUnknownSni": false,
-                "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
-                "Email": "v2bx@github.com",
-                "Provider": "cloudflare",
-                "DNSEnv": {
-                    "EnvName": "env1"
-                }
-            }
-        },
+  "Core": "$core",
+  "ApiHost": "$ApiHost",
+  "ApiKey": "$ApiKey",
+  "NodeID": $NodeID,
+  "NodeType": "$NodeType",
+  "Hysteria2ConfigPath": "/etc/V2bX/hy2config.yaml",
+  "Timeout": 30,
+  "ListenIP": "",
+  "SendIP": "0.0.0.0",
+  "DeviceOnlineMinTraffic": 200,
+  "MinReportTraffic": 0,
+  "CertConfig": {
+    "CertMode": "$certmode", "RejectUnknownSni": false,
+    "CertDomain": "$certdomain", "CertFile": "$certfile",
+    "KeyFile": "$keyfile", "Email": "$certemail",
+    "Provider": "$certprovider", "DNSEnv": $certdnsenv
+  }
+},
 EOF
 )
     fi
+
     nodes_config+=("$node_config")
+    echo -e "${green}已添加 Node $NodeID：$NodeType（核心 $core，证书方式 $certmode）${plain}"
+    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
+        echo -e "${yellow}Let's Encrypt 将在 V2bX 启动时申请；成功后每日检查续期。${plain}"
+    fi
+    return 0
 }
 
 generate_config_file() {
@@ -631,6 +734,7 @@ generate_config_file() {
     first_node=true
     core_xray=false
     core_sing=false
+    core_hysteria2=false
     fixed_api_info=false
     check_api=false
     
@@ -710,12 +814,20 @@ generate_config_file() {
     # 切换到配置文件目录
     cd /etc/V2bX
     
-    # 备份旧的配置文件
-    mv config.json config.json.bak
+    # 备份旧的配置文件，并保护其中的 Xboard API Key / DNS Token。
+    # 不复用旧备份文件名，避免覆盖之前的救援点。
+    local backup_path="/etc/V2bX/config.json.bak.$(date -u +%Y%m%d%H%M%S).$"
+    if [[ -f /etc/V2bX/config.json ]]; then
+        cp -p /etc/V2bX/config.json "$backup_path" || return 1
+        chmod 600 "$backup_path" || return 1
+        echo -e "${yellow}原配置已经备份到：$backup_path${plain}"
+    fi
     nodes_config_str="${nodes_config[*]}"
     formatted_nodes_config="${nodes_config_str%,}"
 
     # 创建 config.json 文件
+    # Restrict secrets and avoid exposing them through a newly created config.
+    umask 077
     cat <<EOF > /etc/V2bX/config.json
 {
     "Log": {
@@ -726,6 +838,14 @@ generate_config_file() {
     "Nodes": [$formatted_nodes_config]
 }
 EOF
+    chmod 600 /etc/V2bX/config.json || return 1
+    # A malformed configuration must never be used to restart the live service.
+    if command -v python3 >/dev/null 2>&1; then
+        if ! python3 -m json.tool /etc/V2bX/config.json >/dev/null 2>&1; then
+            echo -e "${red}生成的 JSON 不合法！当前 V2bX 不会重启，请检查配置并用备份恢复。${plain}"
+            return 1
+        fi
+    fi
     
     # 创建 custom_outbound.json 文件
     cat <<EOF > /etc/V2bX/custom_outbound.json
@@ -938,6 +1058,40 @@ open_ports() {
     echo -e "${green}放开防火墙端口成功！${plain}"
 }
 
+
+# AnyTLS uses the existing V2bX sing-box core, not a separate anytls-go service.
+anytls_manage() {
+    local action="$1"
+    local interactive="${2:-false}"
+    local helper="/usr/local/V2bX/anytls_manager.py"
+    if [[ ! -f "$helper" ]]; then
+        helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/anytls_manager.py"
+    fi
+    local result=0
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${red}AnyTLS 管理需要 python3，请先安装 python3${plain}"
+        result=1
+    elif [[ ! -f "$helper" ]]; then
+        echo -e "${red}未找到 AnyTLS 管理工具。请更新安装脚本后重试。${plain}"
+        result=1
+    else
+        python3 "$helper" "$action" || result=$?
+    fi
+    if [[ "$interactive" == "true" ]]; then
+        before_show_menu
+    fi
+    return "$result"
+}
+
+hy2_pin_show() {
+    local helper="/usr/local/V2bX/hy2_pin_manager.py"
+    if [[ ! -f "$helper" ]]; then helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/hy2_pin_manager.py"; fi
+    if [[ ! -f "$helper" ]]; then echo -e "${red}请先更新 HY2 证书管理器。${plain}"; return 1; fi
+    python3 "$helper" show
+    local result=$?
+    if [[ "${1:-}" != "noninteractive" ]]; then before_show_menu; fi
+    return "$result"
+}
 show_usage() {
     echo "V2bX 管理脚本使用方法: "
     echo "------------------------------------------"
@@ -956,6 +1110,9 @@ show_usage() {
     echo "V2bX install      - 安装 V2bX"
     echo "V2bX uninstall    - 卸载 V2bX"
     echo "V2bX version      - 查看 V2bX 版本"
+    echo "V2bX anytls-add   - 添加 Xboard AnyTLS 节点（不自动重启）"
+    echo "V2bX anytls-check - 检查 AnyTLS 本地配置"
+    echo "V2bX hy2-pin-show - 查看 Hysteria2 证书 SHA256 指纹"
     echo "------------------------------------------"
 }
 
@@ -985,10 +1142,13 @@ show_menu() {
   ${green}15.${plain} 生成 V2bX 配置文件
   ${green}16.${plain} 放行 VPS 的所有网络端口
   ${green}17.${plain} 退出脚本
+  ${green}18.${plain} 添加 Xboard AnyTLS 节点
+  ${green}19.${plain} 检查 AnyTLS 本地配置
+  ${green}20.${plain} 查看 Hysteria2 固定证书指纹
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-17]: " num
+    echo && read -rp "请输入选择 [0-20]: " num
 
     case "${num}" in
         0) config ;;
@@ -1009,7 +1169,10 @@ show_menu() {
         15) generate_config_file ;;
         16) open_ports ;;
         17) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-16]${plain}" ;;
+        18) anytls_manage add true ;;
+        19) anytls_manage check true ;;
+        20) hy2_pin_show ;;
+        *) echo -e "${red}请输入正确的数字 [0-20]${plain}" ;;
     esac
 }
 
@@ -1031,6 +1194,9 @@ if [[ $# > 0 ]]; then
         "x25519") check_install 0 && generate_x25519_key 0 ;;
         "version") check_install 0 && show_V2bX_version 0 ;;
         "update_shell") update_shell ;;
+        "anytls-add") anytls_manage add ;;
+        "anytls-check") anytls_manage check ;;
+        "hy2-pin-show") hy2_pin_show noninteractive ;;
         *) show_usage
     esac
 else

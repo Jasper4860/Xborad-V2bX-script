@@ -545,7 +545,7 @@ configure_node_tls() {
             echo -e "${red}Token 格式无效，不能留空或包含空格/引号。${plain}"
         done
         certdnsenv="{\"CLOUDFLARE_DNS_API_TOKEN\":\"$cf_token\"}"
-        unset cf_token
+        # Keep token only in function scope until the real ACME attempt completes.
     elif [[ "$certmode" == "self" ]]; then
         echo -e "${yellow}自签名证书仅用于测试环境，不属于 Let's Encrypt。${plain}"
     fi

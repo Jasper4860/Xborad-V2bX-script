@@ -103,9 +103,9 @@ configure_node_tls() {
     # file modes: protect their parent directory before the service starts.
     if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
         while true; do
-            read -r -p "请输入 Let's Encrypt 联系邮箱：" certemail || return 1
-            if valid_tls_email "$certemail"; then break; fi
-            echo -e "${red}邮箱格式无效，请重新输入。${plain}"
+            read -r -p "请输入 Let's Encrypt ACME 联系邮箱（非 Cloudflare 账户ID，可直接回车跳过）：" certemail || return 1
+            if [[ -z "$certemail" ]] || valid_tls_email "$certemail"; then break; fi
+            echo -e "${red}邮箱格式无效；请输入合法邮箱或直接回车跳过。${plain}"
         done
     fi
 
@@ -120,6 +120,7 @@ configure_node_tls() {
         fi
     elif [[ "$certmode" == "dns" ]]; then
         certprovider="cloudflare"
+        echo -e "${yellow}Cloudflare 新版账户令牌也通过 Token 认证；当前 lego DNS-01 无需填写 Account ID / Zone ID。${plain}"
         echo -e "${yellow}需要 Cloudflare DNS 区域权限：Zone:Read、DNS:Edit。Token 将以明文写入仅 root 可读的 config.json。${plain}"
         while true; do
             read -r -s -p "请输入 CLOUDFLARE_DNS_API_TOKEN（隐藏输入）：" cf_token || return 1

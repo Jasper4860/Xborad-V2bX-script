@@ -142,3 +142,22 @@ The previous Let's Encrypt HTTP-01 and Cloudflare DNS-01 options remain.
 **Safety**: The original full config wizard regenerates the config and may
 restart V2bX. Back up live configuration and test changes on staging.
 The new certificate helper itself never restarts V2bX or changes iptables.
+
+
+## 中文 AnyTLS 添加向导（`V2bX anytls-add`）
+
+现已将附加 AnyTLS 节点工具的交互文案改为中文。UniProxy API Key 使用**可见输入**，并要求显式确认。请避免在共享终端、录屏、截图、Shell 日志中暴露密钥；配置文件及其备份将设置为 root-only (`chmod 600`)。
+
+证书选择：
+- **1 Let’s Encrypt HTTP-01**：提供域名、邮箱，配置由 V2bX 首次启动时签发；公网 TCP 80 必须到达本机。
+- **2 Let’s Encrypt DNS-01（Cloudflare）**：提供域名、邮箱和 Cloudflare DNS API Token；不要求公网 TCP 80，适合 NAT，但必须拥有域名的 DNS 控制权。
+- **3 已有证书**：需要在服务器上填写真实的 `fullchain.pem`（证书链）和 `privkey.pem`（私钥）绝对路径，工具会核对是否存在且密钥配对。
+
+示例路径：
+
+```text
+/etc/letsencrypt/live/jp.example.com/fullchain.pem
+/etc/letsencrypt/live/jp.example.com/privkey.pem
+```
+
+路径只是示例，不可直接用于其他域名。面板内的 SNI 必须与受信任的证书名称匹配（未启用不安全跳过校验时）。**AnyTLS 的 ECH 配置是独立功能，服务端证书申请不自动配置 ECH。** `anytls-add` 仅追加本地节点配置，不会立即申请证书或自动重启。请先确认 Xboard 节点 ID、端口和服务端 TLS 参数，再在测试机手动重启。

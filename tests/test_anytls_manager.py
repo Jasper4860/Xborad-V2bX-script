@@ -15,7 +15,8 @@ class AnyTLSManagerTests(unittest.TestCase):
     def node(self):
         return mod.build_node('https://example.com/', 'testkey', 123,
                               'node.example.com', 'http',
-                              '/etc/V2bX/anytls-123.cer', '/etc/V2bX/anytls-123.key',\n                              email='cert@example.com')
+                              '/etc/V2bX/anytls-123.cer', '/etc/V2bX/anytls-123.key',
+                              email='cert@example.com')
 
     def test_anytls_core_and_protocol(self):
         node = self.node()

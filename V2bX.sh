@@ -485,6 +485,26 @@ configure_node_tls() {
         echo -e "${red}域名无效：请填写有 DNS 解析的完整域名，不含 https:// 和端口。${plain}"
     done
 
+    # Before prompting for ACME email or Cloudflare token, check a reusable cert.
+    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
+        local reuse_helper="/usr/local/V2bX/acme_cert_manager.py"
+        if [[ ! -f "$reuse_helper" ]]; then
+            reuse_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/acme_cert_manager.py"
+        fi
+        if [[ -f "$reuse_helper" ]] && command -v python3 >/dev/null 2>&1; then
+            echo -e "${yellow}正在检查此前为 $certdomain 签发的证书...${plain}"
+            if python3 "$reuse_helper" reuse --domain "$certdomain"; then
+                certmode="file"
+                certfile="/etc/letsencrypt/live/v2bx-$certdomain/fullchain.pem"
+                keyfile="/etc/letsencrypt/live/v2bx-$certdomain/privkey.pem"
+                certemail=""
+                certprovider=""
+                certdnsenv="{}"
+                echo -e "${green}有效证书已自动复用，跳过申请及 Cloudflare Token 输入。${plain}"
+                return 0
+            fi
+        fi
+    fi
     if [[ "${hy2_pin_enabled:-false}" == "true" ]]; then
         local helper="/usr/local/V2bX/hy2_pin_manager.py"
         if [[ ! -f "$helper" ]]; then

@@ -449,14 +449,21 @@ configure_node_tls() {
     echo -e "${green}2. Let's Encrypt DNS-01（Cloudflare API Token，支持 NAT）${plain}"
     echo -e "${green}3. self 自签名证书（仅测试，客户端需单独信任）${plain}"
     echo -e "${green}4. 使用已有证书文件（不自动续期）${plain}"
+    if [[ "$NodeType" == "hysteria2" ]]; then
+        echo -e "${green}5. 自签名 + SHA256 固定证书（自动生成或复用）${plain}"
+    fi
     while true; do
-        read -r -p "请选择 [1-4]（默认 1）：" selection || return 1
+        read -r -p "请选择证书方式（默认 1）：" selection || return 1
         selection="${selection:-1}"
         case "$selection" in
             1) certmode="http"; break ;;
             2) certmode="dns"; break ;;
             3) certmode="self"; break ;;
             4) certmode="file"; break ;;
+            5) if [[ "$NodeType" == "hysteria2" ]]; then
+                   certmode="file"; hy2_pin_enabled=true; break
+               fi
+               echo "只有 hysteria2 可选择选项 5。" ;;
             *) echo "选择无效，请输入 1-4。" ;;
         esac
     done
@@ -468,6 +475,30 @@ configure_node_tls() {
         echo -e "${red}域名无效：请填写有 DNS 解析的完整域名，不含 https:// 和端口。${plain}"
     done
 
+    if [[ "${hy2_pin_enabled:-false}" == "true" ]]; then
+        local helper="/usr/local/V2bX/hy2_pin_manager.py"
+        if [[ ! -f "$helper" ]]; then
+            helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/hy2_pin_manager.py"
+        fi
+        if [[ ! -f "$helper" ]]; then echo -e "${red}找不到 HY2 证书管理器，请更新安装脚本。${plain}"; return 1; fi
+        if ! command -v openssl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+            echo -e "${red}需要 openssl 和 python3${plain}"; return 1
+        fi
+        local hy2_sni hy2_host hy2_port hy2_mport
+        read -r -p "客户端 SNI（回车默认证书域名）：" hy2_sni || return 1
+        hy2_sni="${hy2_sni:-$certdomain}"
+        read -r -p "公网 NAT/DDNS 连接域名（可留空）：" hy2_host || return 1
+        read -r -p "公网 UDP 连接端口（可留空）：" hy2_port || return 1
+        read -r -p "已映射的 mport UDP 端口范围（可留空）：" hy2_mport || return 1
+        if ! python3 "$helper" issue --domain "$certdomain" --sni "$hy2_sni" --host "$hy2_host" --port "$hy2_port" --mport "$hy2_mport"; then
+            echo -e "${red}证书生成/校验失败，取消添加节点。${plain}"; return 1
+        fi
+        certmode="file"
+        certfile="/etc/V2bX/certs/hy2/$certdomain/cert.pem"
+        keyfile="/etc/V2bX/certs/hy2/$certdomain/key.pem"
+        echo -e "${yellow}请将 Xboard SNI 同步设为 $hy2_sni，并确保订阅下发 pinSHA256。${plain}"
+        return 0
+    fi
     if [[ "$certmode" == "file" ]]; then
         while true; do
             read -r -p "请输入现有 fullchain.pem/cert 文件绝对路径：" certfile || return 1
@@ -531,6 +562,7 @@ add_node_config() {
     local certmode="none" certdomain="example.com" certemail=""
     local certfile="/etc/V2bX/fullchain.cer" keyfile="/etc/V2bX/cert.key"
     local certprovider="" certdnsenv="{}" hy2_line=""
+    local hy2_pin_enabled=false
 
     while true; do
         echo -e "${green}请选择节点核心类型：${plain}"

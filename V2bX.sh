@@ -96,7 +96,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/install.sh)
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/install.sh)
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -112,7 +112,7 @@ update() {
     else
         version=$2
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/install.sh) $version
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/install.sh) $version
     if [[ $? == 0 ]]; then
         echo -e "${green}更新完成，已自动重启 V2bX，请使用 V2bX log 查看运行日志${plain}"
         exit
@@ -300,7 +300,7 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/V2bX.sh
+    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/V2bX.sh
     if [[ $? != 0 ]]; then
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"
@@ -308,7 +308,7 @@ update_shell() {
     else
         chmod +x /usr/bin/V2bX
         if [[ -d /usr/local/V2bX ]]; then
-            curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/tools/anytls_manager.py || echo -e "${yellow}AnyTLS 管理工具下载失败，请稍后重试${plain}"
+            curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/anytls_manager.py || echo -e "${yellow}AnyTLS 管理工具下载失败，请稍后重试${plain}"
         fi
         echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
     fi

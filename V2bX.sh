@@ -781,12 +781,20 @@ generate_config_file() {
     # 切换到配置文件目录
     cd /etc/V2bX
     
-    # 备份旧的配置文件
-    mv config.json config.json.bak
+    # 备份旧的配置文件，并保护其中的 Xboard API Key / DNS Token。
+    # 不复用旧备份文件名，避免覆盖之前的救援点。
+    local backup_path="/etc/V2bX/config.json.bak.$(date -u +%Y%m%d%H%M%S).$"
+    if [[ -f /etc/V2bX/config.json ]]; then
+        cp -p /etc/V2bX/config.json "$backup_path" || return 1
+        chmod 600 "$backup_path" || return 1
+        echo -e "${yellow}原配置已经备份到：$backup_path${plain}"
+    fi
     nodes_config_str="${nodes_config[*]}"
     formatted_nodes_config="${nodes_config_str%,}"
 
     # 创建 config.json 文件
+    # Restrict secrets and avoid exposing them through a newly created config.
+    umask 077
     cat <<EOF > /etc/V2bX/config.json
 {
     "Log": {
@@ -797,6 +805,14 @@ generate_config_file() {
     "Nodes": [$formatted_nodes_config]
 }
 EOF
+    chmod 600 /etc/V2bX/config.json || return 1
+    # A malformed configuration must never be used to restart the live service.
+    if command -v python3 >/dev/null 2>&1; then
+        if ! python3 -m json.tool /etc/V2bX/config.json >/dev/null 2>&1; then
+            echo -e "${red}生成的 JSON 不合法！当前 V2bX 不会重启，请检查配置并用备份恢复。${plain}"
+            return 1
+        fi
+    fi
     
     # 创建 custom_outbound.json 文件
     cat <<EOF > /etc/V2bX/custom_outbound.json

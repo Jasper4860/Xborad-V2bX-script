@@ -252,6 +252,20 @@ EOF
     if ! curl -fLsS --retry 3 -o /usr/local/V2bX/hy2_pin_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/hy2_pin_manager.py; then
         echo -e "${yellow}Hysteria2 证书管理器下载失败，可稍后更新维护脚本重试${plain}"
     fi
+    # Optional ACME helper: no issuance or restart at install time.
+    if ! curl -fLsS --retry 3 -o /usr/local/V2bX/acme_cert_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/acme_cert_manager.py; then
+        echo -e "${yellow}同步 ACME 证书工具下载失败，请稍后升级脚本重试${plain}"
+    fi
+    # Certbot deploy hook: only install if no file already occupies this path.
+    mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+    if [[ ! -e /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart ]]; then
+        if curl -fLsS --retry 3 -o /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/certbot-v2bx-deploy-hook.sh; then
+            chmod 755 /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart
+        else
+            rm -f /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart
+            echo -e "${yellow}续期重载钩子安装失败，请手动安装${plain}"
+        fi
+    fi
     # Extra native AnyTLS manager; no change to V2bX upstream binary.
     if ! curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/anytls_manager.py; then
         echo -e "${yellow}AnyTLS 管理器下载失败；原有 V2bX 安装不受影响${plain}"

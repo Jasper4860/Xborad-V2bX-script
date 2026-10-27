@@ -458,7 +458,9 @@ generate_config_file() {
     # 创建 config.json 文件
     # Restrict secrets and avoid exposing them through a newly created config.
     umask 077
-    cat <<EOF > /etc/V2bX/config.json
+    local staged_conf
+    staged_conf=$(mktemp /etc/V2bX/.config.json.XXXXXXXX) || return 1
+    cat <<EOF > "$staged_conf"
 {
     "Log": {
         "Level": "error",
@@ -468,14 +470,14 @@ generate_config_file() {
     "Nodes": [$formatted_nodes_config]
 }
 EOF
-    chmod 600 /etc/V2bX/config.json || return 1
-    # A malformed configuration must never be used to restart the live service.
-    if command -v python3 >/dev/null 2>&1; then
-        if ! python3 -m json.tool /etc/V2bX/config.json >/dev/null 2>&1; then
-            echo -e "${red}生成的 JSON 不合法！当前 V2bX 不会重启，请检查配置并用备份恢复。${plain}"
-            return 1
-        fi
+    chmod 600 "$staged_conf" || { rm -f "$staged_conf"; return 1; }
+    # Never replace the live config with malformed JSON.
+    if ! command -v python3 >/dev/null 2>&1 || ! python3 -m json.tool "$staged_conf" >/dev/null 2>&1; then
+        rm -f "$staged_conf"
+        echo -e "${red}配置 JSON 校验失败：已删除临时文件，原 config.json 未修改。${plain}"
+        return 1
     fi
+    mv -f "$staged_conf" /etc/V2bX/config.json || { rm -f "$staged_conf"; return 1; }
     
     # 创建 custom_outbound.json 文件
     cat <<EOF > /etc/V2bX/custom_outbound.json

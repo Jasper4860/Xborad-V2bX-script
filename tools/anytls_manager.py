@@ -68,7 +68,7 @@ def build_node(host, key, node_id, domain, cert_mode, cert_file, key_file, email
         raise ConfigError("UniProxy API Key 不能为空")
     if cert_mode not in ("file", "http", "dns"):
         raise ConfigError("证书模式仅支持已有证书、HTTP-01、Cloudflare DNS-01")
-    if cert_mode in ("http", "dns") and ("@" not in email or "." not in email.split("@")[-1]):
+    if cert_mode in ("http", "dns") and email and ("@" not in email or "." not in email.split("@")[-1]):
         raise ConfigError("Let's Encrypt 联系邮箱格式不正确")
     if cert_mode == "dns" and (provider != "cloudflare" or not (dns_env or {}).get("CLOUDFLARE_DNS_API_TOKEN")):
         raise ConfigError("DNS-01 需要 Cloudflare DNS API Token")
@@ -224,13 +224,14 @@ def main():
         key_file = input("请输入 private key 私钥绝对路径：").strip()
     else:
         mode = "http" if choice == "1" else "dns"
-        email = input("请输入 Let's Encrypt 联系邮箱：").strip()
+        email = input("请输入 Let's Encrypt ACME 联系邮箱（非 Cloudflare Account ID，可回车跳过）：").strip()
         cert_file, key_file = acme_file_paths(args.config.parent, node_id, domain)
         if mode == "http":
             print("注意：HTTP-01 必须能够从公网 TCP 80 直接访问该服务器。")
             print("仅有 NAT/DDNS 高位端口映射通常不能使用 HTTP-01。")
         else:
             print("注意：需要拥有/管理证书域名对应的 Cloudflare DNS 区域。")
+            print("当前 lego 的 Cloudflare DNS-01 使用 API Token，不需要填写 Account ID 或 Zone ID。")
             print("API Token 需要 Zone:Read 与 DNS:Edit 权限。")
             token = input("请输入 Cloudflare DNS API Token（可见）：").strip()
             if not re.fullmatch(r"[A-Za-z0-9_-]+", token):

@@ -96,7 +96,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh)
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/install.sh)
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -112,7 +112,7 @@ update() {
     else
         version=$2
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh) $version
+    bash <(curl -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/install.sh) $version
     if [[ $? == 0 ]]; then
         echo -e "${green}更新完成，已自动重启 V2bX，请使用 V2bX log 查看运行日志${plain}"
         exit
@@ -300,13 +300,16 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/V2bX.sh
     if [[ $? != 0 ]]; then
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"
         before_show_menu
     else
         chmod +x /usr/bin/V2bX
+        if [[ -d /usr/local/V2bX ]]; then
+            curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/tools/anytls_manager.py || echo -e "${yellow}AnyTLS 管理工具下载失败，请稍后重试${plain}"
+        fi
         echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
     fi
 }
@@ -938,6 +941,31 @@ open_ports() {
     echo -e "${green}放开防火墙端口成功！${plain}"
 }
 
+
+# AnyTLS uses the existing V2bX sing-box core, not a separate anytls-go service.
+anytls_manage() {
+    local action="$1"
+    local interactive="${2:-false}"
+    local helper="/usr/local/V2bX/anytls_manager.py"
+    if [[ ! -f "$helper" ]]; then
+        helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/anytls_manager.py"
+    fi
+    local result=0
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${red}AnyTLS 管理需要 python3，请先安装 python3${plain}"
+        result=1
+    elif [[ ! -f "$helper" ]]; then
+        echo -e "${red}未找到 AnyTLS 管理工具。请更新安装脚本后重试。${plain}"
+        result=1
+    else
+        python3 "$helper" "$action" || result=$?
+    fi
+    if [[ "$interactive" == "true" ]]; then
+        before_show_menu
+    fi
+    return "$result"
+}
+
 show_usage() {
     echo "V2bX 管理脚本使用方法: "
     echo "------------------------------------------"
@@ -956,6 +984,8 @@ show_usage() {
     echo "V2bX install      - 安装 V2bX"
     echo "V2bX uninstall    - 卸载 V2bX"
     echo "V2bX version      - 查看 V2bX 版本"
+    echo "V2bX anytls-add   - 添加 Xboard AnyTLS 节点（不自动重启）"
+    echo "V2bX anytls-check - 检查 AnyTLS 本地配置"
     echo "------------------------------------------"
 }
 
@@ -985,10 +1015,12 @@ show_menu() {
   ${green}15.${plain} 生成 V2bX 配置文件
   ${green}16.${plain} 放行 VPS 的所有网络端口
   ${green}17.${plain} 退出脚本
+  ${green}18.${plain} 添加 Xboard AnyTLS 节点
+  ${green}19.${plain} 检查 AnyTLS 本地配置
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-17]: " num
+    echo && read -rp "请输入选择 [0-19]: " num
 
     case "${num}" in
         0) config ;;
@@ -1009,7 +1041,9 @@ show_menu() {
         15) generate_config_file ;;
         16) open_ports ;;
         17) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-16]${plain}" ;;
+        18) anytls_manage add true ;;
+        19) anytls_manage check true ;;
+        *) echo -e "${red}请输入正确的数字 [0-19]${plain}" ;;
     esac
 }
 
@@ -1031,6 +1065,8 @@ if [[ $# > 0 ]]; then
         "x25519") check_install 0 && generate_x25519_key 0 ;;
         "version") check_install 0 && show_V2bX_version 0 ;;
         "update_shell") update_shell ;;
+        "anytls-add") anytls_manage add ;;
+        "anytls-check") anytls_manage check ;;
         *) show_usage
     esac
 else

@@ -59,3 +59,35 @@ upstream binary is still downloaded from `wyx2685/V2bX`. The management
 script and helper download from this fork; do not replace a production
 installation without testing. Keep configs and backups private because
 they contain UniProxy API secrets.
+
+## Integrated interactive AnyTLS / Let's Encrypt wizard
+
+Run `V2bX generate`, or use **15. 生成 V2bX 配置文件** in the menu.
+In the **请选择节点核心类型** prompt, select **4. AnyTLS (sing-box core)**.
+The wizard asks for the Xboard AnyTLS Node ID, TLS domain and preferred
+certificate method:
+
+1. **Let's Encrypt HTTP-01** (default): supply a valid FQDN and email.
+   On **V2bX service start**, the built-in lego ACME provider requests the
+   certificate. Renewal is checked once a day. Public TCP/80 must reach
+   the local server, and no other process may hold port 80 during issuance.
+   NAT/DDNS hostname resolution alone cannot solve a missing TCP/80 mapping.
+2. **Let's Encrypt DNS-01 (Cloudflare)**: supply FQDN, contact email and
+   a Cloudflare `CLOUDFLARE_DNS_API_TOKEN` with Zone:Read and DNS:Edit
+   permissions. No public TCP/80 port is required. The credential is stored
+   in `CertConfig.DNSEnv` and the generated config is chmod 600.
+3. **Self-signed**: test use only (not publicly trusted).
+4. **Existing cert files**: does not request or renew certificates.
+
+Automatic certificate acquisition occurs **on the V2bX daemon**, not
+during the wizard. Certificate paths are per-domain:
+`/etc/V2bX/certs/<domain>/fullchain.cer` and
+`/etc/V2bX/certs/<domain>/privkey.pem`. The containing directory is
+chmod 700; do not share private keys through screenshots or issue comments.
+
+**Caution**: the full config generator (option 15) still rebuilds the
+config file, though it now creates a timestamped backup and validates JSON.
+For an existing production node, use **V2bX anytls-add** to append without
+replacing its other node definitions or restarting the service. The two
+flows serve different purposes. Test on staging first, and make sure
+Xboard has an AnyTLS node configured before enabling it.

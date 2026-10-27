@@ -215,46 +215,61 @@ def main():
         raise ConfigError("Node ID 必须是有效正整数")
     node_id = int(raw_id)
     domain = validate_domain(input("请输入 TLS 证书域名（例如 jp.example.com）："))
-    choice = ask_choice()
-    mode, email, provider, env = "file", "", "", {}
-    if choice == "3":
-        print("已有证书需要填写服务器上的真实绝对路径（以 / 开头）。")
-        print("例如：/etc/letsencrypt/live/jp.example.com/fullchain.pem")
-        print("      /etc/letsencrypt/live/jp.example.com/privkey.pem")
-        cert_file = input("请输入 fullchain 证书绝对路径：").strip()
-        key_file = input("请输入 private key 私钥绝对路径：").strip()
-    else:
-        acme_tool = Path("/usr/local/V2bX/acme_cert_manager.py")
-        if not acme_tool.is_file():
-            acme_tool = Path(__file__).with_name("acme_cert_manager.py")
-        if not acme_tool.is_file():
-            raise ConfigError("找不到同步证书申请工具，请更新 V2bX 脚本")
-        mode = "http" if choice == "1" else "dns"
-        email = input("请输入 Let\u0027s Encrypt 联系邮箱（可回车跳过）：").strip()
-        token = ""
-        if mode == "dns":
-            print("Cloudflare Token 需要 Zone:Read 与 DNS:Edit 权限，且域名必须由你管理。")
-            token = input("请输入 Cloudflare DNS API Token（可见，请勿截图）：").strip()
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
-                raise ConfigError("Cloudflare Token 格式不正确")
-        if input("是否现在实时申请证书？失败则不添加节点。[y/N]：").strip().lower() != "y":
-            print("已取消：未修改配置")
-            return 0
-        dep = subprocess.run([sys.executable, str(acme_tool), "deps", "--mode", mode], check=False)
-        if dep.returncode:
-            raise ConfigError("证书组件检查失败；未添加节点")
-        cmd = [sys.executable, str(acme_tool), "issue", "--mode", mode,
-               "--domain", domain, "--email", email]
-        actual = subprocess.run(cmd, input=(token + "\n" if mode == "dns" else None),
-                                text=True, check=False)
-        if actual.returncode:
-            raise ConfigError("Let\u0027s Encrypt 证书验证/申请失败；未添加节点")
+    # Read-only preflight: a valid previous Certbot lineage needs no new ACME call.
+    acme_tool = Path("/usr/local/V2bX/acme_cert_manager.py")
+    if not acme_tool.is_file():
+        acme_tool = Path(__file__).with_name("acme_cert_manager.py")
+    reused = False
+    if acme_tool.is_file():
+        print("正在检查服务器是否已有可复用的 Let\u0027s Encrypt 证书...")
+        reusable = subprocess.run([sys.executable, str(acme_tool), "reuse", "--domain", domain], check=False)
+        reused = reusable.returncode == 0
+    if reused:
+        mode, email, provider, env = "file", "", "", {}
         cert_file = "/etc/letsencrypt/live/v2bx-%s/fullchain.pem" % domain
         key_file = "/etc/letsencrypt/live/v2bx-%s/privkey.pem" % domain
-        mode = "file"  # certbot manages renewal; V2bX consumes existing files
-        email = ""
-        provider = ""
-        env = {}
+        print("已自动复用证书，无需输入 Cloudflare Token。")
+    else:
+        choice = ask_choice()
+        mode, email, provider, env = "file", "", "", {}
+        if choice == "3":
+            print("已有证书需要填写服务器上的真实绝对路径（以 / 开头）。")
+            print("例如：/etc/letsencrypt/live/jp.example.com/fullchain.pem")
+            print("      /etc/letsencrypt/live/jp.example.com/privkey.pem")
+            cert_file = input("请输入 fullchain 证书绝对路径：").strip()
+            key_file = input("请输入 private key 私钥绝对路径：").strip()
+        else:
+            acme_tool = Path("/usr/local/V2bX/acme_cert_manager.py")
+            if not acme_tool.is_file():
+                acme_tool = Path(__file__).with_name("acme_cert_manager.py")
+            if not acme_tool.is_file():
+                raise ConfigError("找不到同步证书申请工具，请更新 V2bX 脚本")
+            mode = "http" if choice == "1" else "dns"
+            email = input("请输入 Let\u0027s Encrypt 联系邮箱（可回车跳过）：").strip()
+            token = ""
+            if mode == "dns":
+                print("Cloudflare Token 需要 Zone:Read 与 DNS:Edit 权限，且域名必须由你管理。")
+                token = input("请输入 Cloudflare DNS API Token（可见，请勿截图）：").strip()
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+                    raise ConfigError("Cloudflare Token 格式不正确")
+            if input("是否现在实时申请证书？失败则不添加节点。[y/N]：").strip().lower() != "y":
+                print("已取消：未修改配置")
+                return 0
+            dep = subprocess.run([sys.executable, str(acme_tool), "deps", "--mode", mode], check=False)
+            if dep.returncode:
+                raise ConfigError("证书组件检查失败；未添加节点")
+            cmd = [sys.executable, str(acme_tool), "issue", "--mode", mode,
+                   "--domain", domain, "--email", email]
+            actual = subprocess.run(cmd, input=(token + "\n" if mode == "dns" else None),
+                                    text=True, check=False)
+            if actual.returncode:
+                raise ConfigError("Let\u0027s Encrypt 证书验证/申请失败；未添加节点")
+            cert_file = "/etc/letsencrypt/live/v2bx-%s/fullchain.pem" % domain
+            key_file = "/etc/letsencrypt/live/v2bx-%s/privkey.pem" % domain
+            mode = "file"  # certbot manages renewal; V2bX consumes existing files
+            email = ""
+            provider = ""
+            env = {}
     node = build_node(host, api_key, node_id, domain, mode, cert_file, key_file,
                       email=email, provider=provider, dns_env=env)
     updated, needs_core = build_updated(existing, node, args.config.parent)

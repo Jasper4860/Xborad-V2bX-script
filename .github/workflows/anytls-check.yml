@@ -1,0 +1,23 @@
+name: AnyTLS manager checks
+
+on:
+  push:
+    branches:
+      - master
+      - feature/native-anytls-management
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell script syntax
+        run: |
+          bash -n V2bX.sh
+          bash -n install.sh
+          bash -n initconfig.sh
+      - name: Check Python syntax and tests
+        run: |
+          python3 -m py_compile tools/anytls_manager.py
+          python3 -m unittest discover -s tests -v

@@ -206,6 +206,40 @@ def validate_certificate(cert, key, domain):
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(expiry))
 
 
+
+def existing_certificate_valid(domain, acme_root=ACME_ROOT, renew_before_days=30):
+    """Reuse only a matching unexpired certificate with enough validity.
+
+    Does not call the CA, Cloudflare, or Certbot; never writes a file.
+    """
+    domain = validate_domain(domain)
+    cert, key = certificate_paths(domain, acme_root)
+    if not cert.is_file() or not key.is_file():
+        print("尚未找到该域名的已有 Certbot 证书，需要继续申请。", flush=True)
+        return False
+    try:
+        expiry_text = validate_certificate(cert, key, domain)
+        # Convert parsed UTC time to seconds independent of the machine timezone.
+        import calendar
+        expiration = calendar.timegm(time.strptime(expiry_text, "%Y-%m-%d %H:%M:%S UTC"))
+    except (AcmeError, ValueError) as exc:
+        print("发现证书，但校验失败，不能直接复用：" + str(exc), flush=True)
+        return False
+    days_left = (expiration - time.time()) / 86400
+    if days_left <= renew_before_days:
+        print("发现有效证书，但剩余约 %.1f 天，已接近续期时间；将继续申请/续期。" % days_left, flush=True)
+        return False
+    print("✓ 检测到之前已签发且可复用的证书（不再申请）", flush=True)
+    print("  域名：" + domain, flush=True)
+    print("  证书：" + str(cert), flush=True)
+    print("  私钥：" + str(key) + "（仅显示路径）", flush=True)
+    print("  到期：" + expiry_text + "（剩余约 %d 天）" % int(days_left), flush=True)
+    renewal_conf = Path(acme_root) / "renewal" / (certificate_name(domain) + ".conf")
+    if not renewal_conf.is_file():
+        print("⚠ 未找到 Certbot 自动续期配置；本次可复用，但需检查后续续期。", flush=True)
+    return True
+
+
 def run_certbot(command, token=""):
     print("=== 开始真实签发 / 校验证书 ===", flush=True)
     try:
@@ -271,12 +305,20 @@ def main():
     issue.add_argument("--email", default="")
     paths = sub.add_parser("paths")
     paths.add_argument("--domain", required=True)
+    reuse = sub.add_parser("reuse", help="只读检查并复用已有可用证书，不访问 CA")
+    reuse.add_argument("--domain", required=True)
+    reuse.add_argument("--renew-before-days", type=int, default=30)
     args = parser.parse_args()
     if args.action == "deps":
         ensure_dependencies(args.mode)
     elif args.action == "paths":
         cert, key = certificate_paths(args.domain)
         print("%s|%s" % (cert, key))
+    elif args.action == "reuse":
+        if args.renew_before_days < 0 or args.renew_before_days > 90:
+            raise AcmeError("续期阈值必须在 0–90 天之间")
+        if not existing_certificate_valid(args.domain, renew_before_days=args.renew_before_days):
+            sys.exit(1)
     else:
         token = sys.stdin.readline().strip() if args.mode == "dns" else ""
         issue_certificate(args.mode, args.domain, args.email, token)

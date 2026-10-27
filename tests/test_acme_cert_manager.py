@@ -25,6 +25,40 @@ class FakeResponse:
 
 
 class AcmeTests(unittest.TestCase):
+    def test_reuse_valid_existing_certificate(self):
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            cert, key = acme.certificate_paths("jp.wuya.me", directory)
+            cert.parent.mkdir(parents=True)
+            cert.write_text("test certificate")
+            key.write_text("test private key")
+            expires = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(time.time() + 75*86400))
+            with patch.object(acme, "validate_certificate", return_value=expires):
+                self.assertTrue(acme.existing_certificate_valid("jp.wuya.me", directory))
+
+    def test_reuse_near_expiration_requires_renewal(self):
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            cert, key = acme.certificate_paths("jp.wuya.me", directory)
+            cert.parent.mkdir(parents=True)
+            cert.write_text("test certificate")
+            key.write_text("test private key")
+            expires = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(time.time() + 8*86400))
+            with patch.object(acme, "validate_certificate", return_value=expires):
+                self.assertFalse(acme.existing_certificate_valid("jp.wuya.me", directory))
+
+    def test_reuse_missing_certificate_returns_false(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(acme.existing_certificate_valid("jp.wuya.me", directory))
+
+    def test_reuse_mismatched_certificate_returns_false(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cert, key = acme.certificate_paths("jp.wuya.me", directory)
+            cert.parent.mkdir(parents=True)
+            cert.write_text("mismatched")
+            key.write_text("mismatched")
+            with patch.object(acme, "validate_certificate", side_effect=acme.AcmeError("not matching")):
+                self.assertFalse(acme.existing_certificate_valid("jp.wuya.me", directory))
     def test_certbot_dns_flags(self):
         args = acme.certbot_command("dns", "jp.wuya.me", "admin@example.com", "/root/cf.ini")
         self.assertIn("--dns-cloudflare", args)

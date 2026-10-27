@@ -91,3 +91,54 @@ For an existing production node, use **V2bX anytls-add** to append without
 replacing its other node definitions or restarting the service. The two
 flows serve different purposes. Test on staging first, and make sure
 Xboard has an AnyTLS node configured before enabling it.
+
+
+## Hysteria2 self-signed certificate + pinSHA256 (native installer)
+
+Run `V2bX generate` and select **3. hysteria2** (native Hysteria2 core) or
+**2. singbox -> 5. Hysteria2**. When asked for the TLS certificate mode,
+choose **5. 自签名 + SHA256 固定证书** (available only for Hysteria2).
+Enter a locally managed certificate name (for example `jp.example.com`),
+then the client SNI (defaults to that name), optional public NAT/DDNS host,
+public UDP port, and optional *already forwarded* mport range.
+
+The wizard installs/reuses a 365-day self-signed leaf certificate at
+`/etc/V2bX/certs/hy2/<certificate-name>/{cert.pem,key.pem}`, prints the
+full leaf certificate SHA-256 fingerprint, and uses V2bX `CertMode=file`.
+It will **never silently rotate** an existing cert or key: this avoids
+breaking all clients that pin the fingerprint. For renewal, explicitly
+replace the cert/key and update pinned fingerprints in every client.
+
+```bash
+# View local node certificate fingerprints (no service restart):
+V2bX hy2-pin-show
+
+# Inspect a particular local certificate:
+python3 /usr/local/V2bX/hy2_pin_manager.py show \\
+  --cert /etc/V2bX/certs/hy2/jp.example.com/cert.pem
+
+# To activate a generated config on a TEST server after review:
+systemctl restart V2bX
+journalctl -u V2bX -n 100 --no-pager
+```
+
+The printed connection URI is a **template** with `YOUR_XBOARD_USER_PASSWORD`,
+not a working subscription link. Set the same client SNI in the Xboard
+node's TLS settings. Xboard's default General Hysteria2 subscription
+exporter does not currently emit `pinSHA256` automatically; do not
+publish `insecure=1` subscriptions without a matching pin or otherwise
+trusted CA certificate. Integrating pin distribution into Xboard's
+subscription exporters is a separate change, NOT included here.
+
+The **mport** parameter is an optional *example only*: no UDP port range
+is opened or forwarded by this script. Public NAT mappings and firewall
+forwarding must exist and all chosen UDP ports must land on the same
+Hysteria2 server. If only one UDP port is mapped, leave mport empty.
+
+This workflow uses the existing native V2bX Hysteria2 server and **does
+not require installing AnyTLS-Go, another Hysteria2 service, or Let's Encrypt**.
+The previous Let's Encrypt HTTP-01 and Cloudflare DNS-01 options remain.
+
+**Safety**: The original full config wizard regenerates the config and may
+restart V2bX. Back up live configuration and test changes on staging.
+The new certificate helper itself never restarts V2bX or changes iptables.

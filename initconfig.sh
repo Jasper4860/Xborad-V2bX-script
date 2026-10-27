@@ -133,6 +133,45 @@ configure_node_tls() {
     elif [[ "$certmode" == "self" ]]; then
         echo -e "${yellow}自签名证书仅用于测试环境，不属于 Let's Encrypt。${plain}"
     fi
+    # ACME preflight is synchronous. Do not add a node until we have a valid certificate.
+    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
+        local acme_helper="/usr/local/V2bX/acme_cert_manager.py"
+        if [[ ! -f "$acme_helper" ]]; then
+            acme_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/acme_cert_manager.py"
+        fi
+        if [[ ! -f "$acme_helper" ]]; then
+            echo -e "${red}未找到同步 ACME 工具，取消添加节点。请更新安装脚本。${plain}"
+            return 1
+        fi
+        if ! python3 "$acme_helper" deps --mode "$certmode"; then
+            echo -e "${red}签发依赖检查失败，节点未添加。${plain}"
+            return 1
+        fi
+        echo -e "${yellow}正在执行真实 Let's Encrypt 申请与证书验证...${plain}"
+        if [[ "$certmode" == "dns" ]]; then
+            if ! printf "%s\n" "$cf_token" | python3 "$acme_helper" issue --mode dns --domain "$certdomain" --email "$certemail"; then
+                unset cf_token certdnsenv
+                echo -e "${red}证书申请失败，当前节点未添加；请检查日志。${plain}"
+                return 1
+            fi
+        else
+            if ! python3 "$acme_helper" issue --mode http --domain "$certdomain" --email "$certemail"; then
+                echo -e "${red}证书申请失败，当前节点未添加；请检查日志。${plain}"
+                return 1
+            fi
+        fi
+        unset cf_token
+        # Certbot maintains its own automatic renewals. Read verified files via file mode;
+        # never make V2bX run another ACME client against the same certificate.
+        certmode="file"
+        certfile="/etc/letsencrypt/live/v2bx-$certdomain/fullchain.pem"
+        keyfile="/etc/letsencrypt/live/v2bx-$certdomain/privkey.pem"
+        certprovider=""
+        certdnsenv="{}"
+        echo -e "${green}✓ 证书申请/验证成功，已改用 Certbot 证书文件模式。${plain}"
+        echo -e "${yellow}提示：Certbot 将负责续期；请配置续期后重载 V2bX。${plain}"
+        return 0
+    fi
     # Do not create the cert folder if user selected existing certificate.
     if ! mkdir -p "/etc/V2bX/certs/$certdomain"; then
         echo -e "${red}证书目录无法创建。${plain}"
@@ -296,8 +335,8 @@ EOF
 
     nodes_config+=("$node_config")
     echo -e "${green}已添加 Node $NodeID：$NodeType（核心 $core，证书方式 $certmode）${plain}"
-    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
-        echo -e "${yellow}Let's Encrypt 将在 V2bX 启动时申请；成功后每日检查续期。${plain}"
+    if [[ "$certmode" == "file" ]]; then
+        echo -e "${green}证书模式 file；证书已由向导校验或由 Certbot 申请。${plain}"
     fi
     return 0
 }
@@ -333,7 +372,10 @@ generate_config_file() {
                 echo -e "${red}成功固定地址${plain}"
             fi
             first_node=false
-            add_node_config
+            if ! add_node_config; then
+                echo -e "${red}添加节点失败，停止向导，原 config.json 未被修改。${plain}"
+                return 1
+            fi
         else
             read -rp "是否继续添加节点配置？(回车继续，输入n或no退出)" continue_adding_node
             if [[ "$continue_adding_node" =~ ^[Nn][Oo]? ]]; then
@@ -342,7 +384,10 @@ generate_config_file() {
                 read -rp "请输入机场网址(https://example.com)：" ApiHost
                 read -rp "请输入面板对接API Key：" ApiKey
             fi
-            add_node_config
+            if ! add_node_config; then
+                echo -e "${red}添加节点失败，停止向导，原 config.json 未被修改。${plain}"
+                return 1
+            fi
         fi
     done
 

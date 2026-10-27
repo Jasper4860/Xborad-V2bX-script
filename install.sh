@@ -246,8 +246,12 @@ EOF
     if [[ ! -f /etc/V2bX/custom_inbound.json ]]; then
         cp custom_inbound.json /etc/V2bX/
     fi
-    curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/V2bX.sh
     chmod +x /usr/bin/V2bX
+    # Extra native AnyTLS manager; no change to V2bX upstream binary.
+    if ! curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/tools/anytls_manager.py; then
+        echo -e "${yellow}AnyTLS 管理器下载失败；原有 V2bX 安装不受影响${plain}"
+    fi
     if [ ! -L /usr/bin/v2bx ]; then
         ln -s /usr/bin/V2bX /usr/bin/v2bx
         chmod +x /usr/bin/v2bx
@@ -278,7 +282,7 @@ EOF
     if [[ $first_install == true ]]; then
         read -rp "检测到你为第一次安装V2bX,是否自动直接生成配置文件？(y/n): " if_generate
         if [[ $if_generate == [Yy] ]]; then
-            curl -o ./initconfig.sh -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/initconfig.sh
+            curl -o ./initconfig.sh -Ls https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/master/initconfig.sh
             source initconfig.sh
             rm initconfig.sh -f
             generate_config_file

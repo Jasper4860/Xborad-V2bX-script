@@ -175,3 +175,11 @@ The new certificate helper itself never restarts V2bX or changes iptables.
 续期交给系统 certbot.timer。安装器/管理脚本更新会添加部署钩子 /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart；它仅对 live config 正在使用的证书执行续期成功后的 V2bX 重启，已有同名钩子不会覆盖。
 检查续期：systemctl status certbot.timer --no-pager；certbot certificates。
 注意：全量生成向导仍会重新创建 config.json 并重启服务；生产环境请先备份，优先使用只追加的 V2bX anytls-add。ECH 和端口映射也需要分别正确配置。
+
+## 自动检测和复用已经申请的 TLS 证书
+
+现在运行 `V2bX generate` 或 `V2bX anytls-add` 时，选择 HTTP-01 / DNS-01 并输入域名后，会先执行只读 `acme_cert_manager.py reuse --domain <域名>`。
+若 `/etc/letsencrypt/live/v2bx-<域名>/{fullchain.pem,privkey.pem}` 已存在、证书与私钥匹配、SAN 含当前域名且剩余有效期超过 30 天，直接设为 CertMode=file，不会再次调用 Certbot、Cloudflare API，也不会再要求输入联系邮箱或 DNS Token。
+若证书缺失、校验失败、到期或剩余有效期不足 30 天，则保留原来的签发/续期流程，仍须提供具有 DNS 区域权限的 Cloudflare Token（DNS-01）或公网 80 端口（HTTP-01）。
+这个行为不会自动复用无关域名、其他 Certbot lineage 或用户自行放置的证书；对这类证书请显式选择已有文件模式。
+直接查看是否能复用：`python3 /usr/local/V2bX/acme_cert_manager.py reuse --domain wuya-162141-hk.5708888.xyz`。返回码 0 表示可复用；返回 1 表示需要重新配置/续期。

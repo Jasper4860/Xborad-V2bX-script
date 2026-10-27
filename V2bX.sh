@@ -309,6 +309,7 @@ update_shell() {
         chmod +x /usr/bin/V2bX
         if [[ -d /usr/local/V2bX ]]; then
             curl -fLsS --retry 3 -o /usr/local/V2bX/anytls_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/anytls_manager.py || echo -e "${yellow}AnyTLS 管理工具下载失败，请稍后重试${plain}"
+            curl -fLsS --retry 3 -o /usr/local/V2bX/hy2_pin_manager.py https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/tools/hy2_pin_manager.py || echo -e "${yellow}HY2 证书管理器下载失败，请稍后重试${plain}"
         fi
         echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
     fi
@@ -1082,6 +1083,15 @@ anytls_manage() {
     return "$result"
 }
 
+hy2_pin_show() {
+    local helper="/usr/local/V2bX/hy2_pin_manager.py"
+    if [[ ! -f "$helper" ]]; then helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/hy2_pin_manager.py"; fi
+    if [[ ! -f "$helper" ]]; then echo -e "${red}请先更新 HY2 证书管理器。${plain}"; return 1; fi
+    python3 "$helper" show
+    local result=$?
+    if [[ "${1:-}" != "noninteractive" ]]; then before_show_menu; fi
+    return "$result"
+}
 show_usage() {
     echo "V2bX 管理脚本使用方法: "
     echo "------------------------------------------"
@@ -1102,6 +1112,7 @@ show_usage() {
     echo "V2bX version      - 查看 V2bX 版本"
     echo "V2bX anytls-add   - 添加 Xboard AnyTLS 节点（不自动重启）"
     echo "V2bX anytls-check - 检查 AnyTLS 本地配置"
+    echo "V2bX hy2-pin-show - 查看 Hysteria2 证书 SHA256 指纹"
     echo "------------------------------------------"
 }
 
@@ -1133,10 +1144,11 @@ show_menu() {
   ${green}17.${plain} 退出脚本
   ${green}18.${plain} 添加 Xboard AnyTLS 节点
   ${green}19.${plain} 检查 AnyTLS 本地配置
+  ${green}20.${plain} 查看 Hysteria2 固定证书指纹
  "
  #后续更新可加入上方字符串中
     show_status
-    echo && read -rp "请输入选择 [0-19]: " num
+    echo && read -rp "请输入选择 [0-20]: " num
 
     case "${num}" in
         0) config ;;
@@ -1159,7 +1171,8 @@ show_menu() {
         17) exit ;;
         18) anytls_manage add true ;;
         19) anytls_manage check true ;;
-        *) echo -e "${red}请输入正确的数字 [0-19]${plain}" ;;
+        20) hy2_pin_show ;;
+        *) echo -e "${red}请输入正确的数字 [0-20]${plain}" ;;
     esac
 }
 
@@ -1183,6 +1196,7 @@ if [[ $# > 0 ]]; then
         "update_shell") update_shell ;;
         "anytls-add") anytls_manage add ;;
         "anytls-check") anytls_manage check ;;
+        "hy2-pin-show") hy2_pin_show noninteractive ;;
         *) show_usage
     esac
 else

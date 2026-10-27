@@ -161,3 +161,17 @@ The new certificate helper itself never restarts V2bX or changes iptables.
 ```
 
 路径只是示例，不可直接用于其他域名。面板内的 SNI 必须与受信任的证书名称匹配（未启用不安全跳过校验时）。**AnyTLS 的 ECH 配置是独立功能，服务端证书申请不自动配置 ECH。** `anytls-add` 仅追加本地节点配置，不会立即申请证书或自动重启。请先确认 Xboard 节点 ID、端口和服务端 TLS 参数，再在测试机手动重启。
+
+
+## ACME 同步证书签发：成功才提交节点
+
+通过 V2bX generate 或 V2bX anytls-add 选择 HTTP-01 / Cloudflare DNS-01 后：
+- 检查 Certbot / OpenSSL / DNS 插件；缺少时需要确认后才安装 Debian 软件包。
+- DNS-01 检查 Cloudflare Token 有权访问 DNS Zone。服务商的 NAT 子域名不能使用其他 Zone 的 Token。
+- 立即运行 Certbot，显示 ACME 日志；仅在证书 SAN、有效期及证书/私钥匹配校验成功后，才生成节点配置。
+- 成功后 CertMode=file，从 /etc/letsencrypt/live/v2bx-<域名>/fullchain.pem 与 privkey.pem 读取证书；不再让 V2bX 重复申请。
+- 失败时停止添加节点，保留原来的 config.json，并恢复原 Cloudflare 凭据文件。Certbot 本身可能留下 ACME 日志和账户数据。
+
+续期交给系统 certbot.timer。安装器/管理脚本更新会添加部署钩子 /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart；它仅对 live config 正在使用的证书执行续期成功后的 V2bX 重启，已有同名钩子不会覆盖。
+检查续期：systemctl status certbot.timer --no-pager；certbot certificates。
+注意：全量生成向导仍会重新创建 config.json 并重启服务；生产环境请先备份，优先使用只追加的 V2bX anytls-add。ECH 和端口映射也需要分别正确配置。

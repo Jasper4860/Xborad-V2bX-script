@@ -15,13 +15,33 @@ class AnyTLSManagerTests(unittest.TestCase):
     def node(self):
         return mod.build_node('https://example.com/', 'testkey', 123,
                               'node.example.com', 'http',
-                              '/etc/V2bX/anytls-123.cer', '/etc/V2bX/anytls-123.key')
+                              '/etc/V2bX/anytls-123.cer', '/etc/V2bX/anytls-123.key',\n                              email='cert@example.com')
 
     def test_anytls_core_and_protocol(self):
         node = self.node()
         self.assertEqual(node['Core'], 'sing')
         self.assertEqual(node['NodeType'], 'anytls')
         self.assertEqual(node['NodeID'], 123)
+
+    def test_dns_mode_stores_cloudflare_token(self):
+        node = mod.build_node('https://example.com', 'key', 10, 'jp.example.com',
+                              'dns', '/tmp/example.crt', '/tmp/example.key',
+                              email='cert@example.com', provider='cloudflare',
+                              dns_env={'CLOUDFLARE_DNS_API_TOKEN': 'testtoken'})
+        self.assertEqual(node['CertConfig']['CertMode'], 'dns')
+        self.assertEqual(node['CertConfig']['DNSEnv']['CLOUDFLARE_DNS_API_TOKEN'], 'testtoken')
+
+    def test_dns_without_token_rejected(self):
+        with self.assertRaises(mod.ConfigError):
+            mod.build_node('https://example.com', 'key', 10, 'jp.example.com',
+                           'dns', '/tmp/example.crt', '/tmp/example.key',
+                           email='cert@example.com', provider='cloudflare')
+
+    def test_acme_paths_are_unique(self):
+        one = mod.acme_file_paths(Path('/etc/V2bX'), 50, 'jp.example.com')
+        other = mod.acme_file_paths(Path('/etc/V2bX'), 51, 'jp.example.com')
+        self.assertNotEqual(one, other)
+        self.assertTrue(one[0].startswith('/etc/V2bX/certs/anytls/'))
 
     def test_existing_nodes_and_cores_preserved(self):
         config = {'Log': {'Level': 'info'}, 'Cores': [{'Type': 'xray'}],

@@ -11,12 +11,29 @@ Find the source code here: [InazumaV/V2bX](https://github.com/InazumaV/V2bX)
 
 [教程](https://v2bx.v-50.me/)
 
-# 一键安装
+## 安装与升级（测试分支）
 
-```
-wget -N https://raw.githubusercontent.com/Jasper4860/Xborad-V2bX-script/feature/native-anytls-management/install.sh && bash install.sh
+在 **Debian 测试机**先验证。不要在生产机上直接执行来自可变分支的下载脚本。审核源码后，从受信任的仓库检出并固定提交。需要 Bash、Python 3、Git、curl 和系统 CA 证书；安装器不会自动修改系统软件包。
+
+```bash
+# 将占位值换成审核过的完整 Git 提交 SHA，再从已克隆的仓库执行。
+REV='<完整 Git 提交 SHA>'
+git checkout --detach "$REV"
+sudo bash ./install.sh v0.4.0 --scripts-rev "$REV"
 ```
 
+- 不默认追踪 `latest`。二进制使用指定 GitHub Release 的 SHA-256 校验；若没有可信的发布摘要，须以 `--sha256` 提供已核实的摘要，否则停止。摘要验证的是包内容与预期是否一致，不代表上游二进制经过安全审计。
+- 首次安装不默认启动服务；审核配置后再启动。升级保留现有配置和证书文件；活动服务会进行切换检查，失败尝试回滚。未运行的服务不因升级自动启动，除非显式指定 `--start`。
+- 已安装安全版后，用 `sudo V2bX update v0.4.0` 升级核心；只更新管理脚本和辅助工具时，从审核过的 checkout 运行 `sudo bash ./install.sh --scripts-only --scripts-rev "$REV"`，不重启服务。
+- 生产升级前，请备份 `/etc/V2bX` 并安排维护窗口。服务进程检查不等于实际节点连通性或面板连接检查。
+
+## 免费证书：默认不需要 Cloudflare Token
+
+默认使用 Let's Encrypt **HTTP-01**。公网 TCP 80 必须能到达该域名的验证路径 `/.well-known/acme-challenge/`；同时检查已有的 A 和 AAAA 记录。如果 Nginx 已经监听 80，填能够实际提供验证文件的绝对 Webroot 路径。留空只在 80 能绑定时使用 standalone，不会停止 Nginx、调整防火墙或修改业务端口。
+
+如果 80 不可达，选「使用已有证书」，填写证书和私钥路径。工具不会自动改用 DNS-01、下发 Cloudflare Token、自签名或关闭校验。既有 DNS-01 配置和续签机制保留；选用旧方式须主动选择，请为旧凭据做最小权限和轮换管理。
+
+首次自动签发前，请在 systemd 主机上确认 Certbot 的续期 timer 已启用且正在运行，以及项目自带续期钩子已经安装。签发成功、域名及证书/私钥校验通过后才写入节点配置；续签时只处理引用该证书的 V2bX 服务。首次签发失败不覆盖节点。用 `certbot renew --cert-name <证书名> --dry-run` 测试续签，不把 ACME 测试证书发给客户端。上线前在独立节点验证一次签发、续签和服务切换。
 
 ## AnyTLS (native V2bX + sing-box)
 
@@ -47,16 +64,16 @@ Before writing it keeps `config.json.bak-anytls-*`. If a new sing-box core
 is needed and `sing_origin.json` is absent, it creates a minimal default
 that blocks private destination IPs. If that file exists, it is preserved.
 
-TLS modes: **file** (valid existing certificate/key pair, recommended) or
-**http** (V2bX attempts ACME; requires working DNS and externally reachable
-TCP/80). The helper does not restart V2bX, change iptables, or alter Docker.
+Choose existing trusted certificate files, or use Certbot HTTP-01 when
+TCP/80 is available. The helper does not restart V2bX, change iptables,
+or alter Docker.
 It intentionally refuses to rewrite JSON5-with-comments configuration.
 An old V2bX executable or an outdated Xboard panel may not support this
 protocol even if the menu shows it; check actual versions first.
 
 **Important:** This is a script integration, not a new proxy engine. The
 upstream binary is still downloaded from `wyx2685/V2bX`. The management
-script and helper download from this fork; do not replace a production
+scripts and helpers are staged from the reviewed Git commit; do not replace a production
 installation without testing. Keep configs and backups private because
 they contain UniProxy API secrets.
 
@@ -68,22 +85,21 @@ The wizard asks for the Xboard AnyTLS Node ID, TLS domain and preferred
 certificate method:
 
 1. **Let's Encrypt HTTP-01** (default): supply a valid FQDN and email.
-   On **V2bX service start**, the built-in lego ACME provider requests the
-   certificate. Renewal is checked once a day. Public TCP/80 must reach
-   the local server, and no other process may hold port 80 during issuance.
+   Certbot validates the domain on public TCP/80 before the node is written.
+   Use an existing webroot when a web server already serves that path, or
+   standalone only when the port is free. Certbot manages renewal.
    NAT/DDNS hostname resolution alone cannot solve a missing TCP/80 mapping.
 2. **Let's Encrypt DNS-01 (Cloudflare)**: supply FQDN, contact email and
    a Cloudflare `CLOUDFLARE_DNS_API_TOKEN` with Zone:Read and DNS:Edit
-   permissions. No public TCP/80 port is required. The credential is stored
-   in `CertConfig.DNSEnv` and the generated config is chmod 600.
+   permissions. No public TCP/80 port is required. Fresh Certbot DNS-01
+   requests store a credential for future renewals in a root-only file,
+   not in the generated V2bX node entry.
 3. **Self-signed**: test use only (not publicly trusted).
 4. **Existing cert files**: does not request or renew certificates.
 
-Automatic certificate acquisition occurs **on the V2bX daemon**, not
-during the wizard. Certificate paths are per-domain:
-`/etc/V2bX/certs/<domain>/fullchain.cer` and
-`/etc/V2bX/certs/<domain>/privkey.pem`. The containing directory is
-chmod 700; do not share private keys through screenshots or issue comments.
+For automatic issuance, Certbot obtains and validates the certificate during
+the wizard; V2bX loads the resulting files. Do not share private keys through
+screenshots or issue comments.
 
 **Caution**: the full config generator (option 15) still rebuilds the
 config file, though it now creates a timestamped backup and validates JSON.
@@ -146,10 +162,10 @@ The new certificate helper itself never restarts V2bX or changes iptables.
 
 ## 中文 AnyTLS 添加向导（`V2bX anytls-add`）
 
-现已将附加 AnyTLS 节点工具的交互文案改为中文。UniProxy API Key 使用**可见输入**，并要求显式确认。请避免在共享终端、录屏、截图、Shell 日志中暴露密钥；配置文件及其备份将设置为 root-only (`chmod 600`)。
+现已将附加 AnyTLS 节点工具的交互文案改为中文。UniProxy API Key 请在受信任的终端输入，不要录屏、截图或开启 Shell 跟踪。配置文件及其备份仅允许 root 读取（`chmod 600`）。
 
 证书选择：
-- **1 Let’s Encrypt HTTP-01**：提供域名、邮箱，配置由 V2bX 首次启动时签发；公网 TCP 80 必须到达本机。
+- **1 Let’s Encrypt HTTP-01**：提供域名、邮箱，以及现有 HTTP Webroot（可选，留空使用 standalone）；公网 TCP 80 必须可达。由 Certbot 签发和续签，不需要 Cloudflare Token。
 - **2 Let’s Encrypt DNS-01（Cloudflare）**：提供域名、邮箱和 Cloudflare DNS API Token；不要求公网 TCP 80，适合 NAT，但必须拥有域名的 DNS 控制权。
 - **3 已有证书**：需要在服务器上填写真实的 `fullchain.pem`（证书链）和 `privkey.pem`（私钥）绝对路径，工具会核对是否存在且密钥配对。
 
@@ -160,7 +176,7 @@ The new certificate helper itself never restarts V2bX or changes iptables.
 /etc/letsencrypt/live/jp.example.com/privkey.pem
 ```
 
-路径只是示例，不可直接用于其他域名。面板内的 SNI 必须与受信任的证书名称匹配（未启用不安全跳过校验时）。**AnyTLS 的 ECH 配置是独立功能，服务端证书申请不自动配置 ECH。** `anytls-add` 仅追加本地节点配置，不会立即申请证书或自动重启。请先确认 Xboard 节点 ID、端口和服务端 TLS 参数，再在测试机手动重启。
+路径只是示例，不可直接用于其他域名。面板内的 SNI 必须与受信任的证书名称匹配（未启用不安全跳过校验时）。**AnyTLS 的 ECH 配置是独立功能，服务端证书申请不自动配置 ECH。** `anytls-add` 仅在证书校验通过后追加本地节点配置，不会自动重启服务。请先确认 Xboard 节点 ID、端口和服务端 TLS 参数，再在测试机手动重启。
 
 
 ## ACME 同步证书签发：成功才提交节点
@@ -169,17 +185,21 @@ The new certificate helper itself never restarts V2bX or changes iptables.
 - 检查 Certbot / OpenSSL / DNS 插件；缺少时需要确认后才安装 Debian 软件包。
 - DNS-01 检查 Cloudflare Token 有权访问 DNS Zone。服务商的 NAT 子域名不能使用其他 Zone 的 Token。
 - 立即运行 Certbot，显示 ACME 日志；仅在证书 SAN、有效期及证书/私钥匹配校验成功后，才生成节点配置。
-- 成功后 CertMode=file，从 /etc/letsencrypt/live/v2bx-<域名>/fullchain.pem 与 privkey.pem 读取证书；不再让 V2bX 重复申请。
+- 成功后使用 CertMode=file，由 V2bX 读取工具返回的证书与私钥路径，不重复申请。新受管证书使用可回退的副本；已有直接引用 Certbot live 路径的配置不会自动迁移。
 - 失败时停止添加节点，保留原来的 config.json，并恢复原 Cloudflare 凭据文件。Certbot 本身可能留下 ACME 日志和账户数据。
 
-续期交给系统 certbot.timer。安装器/管理脚本更新会添加部署钩子 /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart；它仅对 live config 正在使用的证书执行续期成功后的 V2bX 重启，已有同名钩子不会覆盖。
+续期交给系统 certbot.timer。安装器/管理脚本更新会添加部署钩子 /etc/letsencrypt/renewal-hooks/deploy/95-v2bx-native-restart；它仅对 live config 正在使用的证书执行续期成功后的 V2bX 重启，仅迁移可确认来自本项目的旧版钩子，不覆盖自定义钩子。
 检查续期：systemctl status certbot.timer --no-pager；certbot certificates。
 注意：全量生成向导仍会重新创建 config.json 并重启服务；生产环境请先备份，优先使用只追加的 V2bX anytls-add。ECH 和端口映射也需要分别正确配置。
 
-## 自动检测和复用已经申请的 TLS 证书
+## 检查已经申请的 TLS 证书
 
-现在运行 `V2bX generate` 或 `V2bX anytls-add` 时，选择 HTTP-01 / DNS-01 并输入域名后，会先执行只读 `acme_cert_manager.py reuse --domain <域名>`。
-若 `/etc/letsencrypt/live/v2bx-<域名>/{fullchain.pem,privkey.pem}` 已存在、证书与私钥匹配、SAN 含当前域名且剩余有效期超过 30 天，直接设为 CertMode=file，不会再次调用 Certbot、Cloudflare API，也不会再要求输入联系邮箱或 DNS Token。
-若证书缺失、校验失败、到期或剩余有效期不足 30 天，则保留原来的签发/续期流程，仍须提供具有 DNS 区域权限的 Cloudflare Token（DNS-01）或公网 80 端口（HTTP-01）。
-这个行为不会自动复用无关域名、其他 Certbot lineage 或用户自行放置的证书；对这类证书请显式选择已有文件模式。
-直接查看是否能复用：`python3 /usr/local/V2bX/acme_cert_manager.py reuse --domain wuya-162141-hk.5708888.xyz`。返回码 0 表示可复用；返回 1 表示需要重新配置/续期。
+同域名的 Certbot 证书只在名称匹配、证书与私钥配对且未过期时复用。向导不会把已登记的 DNS-01 证书切换成 HTTP-01，也不会从旧配置读出或显示 Token。临近到期时请检查该证书所属的续期任务；无效或过期时，先修复已有续期配置，不要盲目重复签发。
+
+```bash
+sudo certbot certificates
+systemctl status certbot.timer --no-pager
+sudo certbot renew --cert-name v2bx-node.example.com --dry-run
+```
+
+命令中的证书名只是示例，以 `certbot certificates` 实际显示为准。

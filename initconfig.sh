@@ -27,13 +27,35 @@ valid_tls_email() {
 }
 
 # Called by add_node_config. Variables are dynamically scoped to that function.
+use_existing_node_certificate() {
+    local helper="$1"
+    while true; do
+        read -r -p "请输入现有 fullchain.pem/cert 文件绝对路径：" certfile || return 1
+        read -r -p "请输入现有私钥文件绝对路径：" keyfile || return 1
+        # These shell wizards interpolate paths into a JSON template.
+        if [[ "$certfile" =~ ^/[A-Za-z0-9._/-]+$ && "$keyfile" =~ ^/[A-Za-z0-9._/-]+$ ]] &&
+           python3 "$helper" validate --domain "$certdomain" --cert "$certfile" --key "$keyfile"; then
+            certmode="file"
+            certemail=""
+            certprovider=""
+            certdnsenv="{}"
+            echo "使用已有证书；本向导不会接管其续期。"
+            return 0
+        fi
+        echo -e "${red}请提供与域名匹配的有效证书和私钥；路径须为绝对路径且不含空格。回车可取消。${plain}"
+        [[ -n "$certfile" && -n "$keyfile" ]] || return 1
+    done
+}
+
 configure_node_tls() {
-    local selection cf_token
+    local selection cf_token="" helper paths webroot="" fallback=""
+    local tracked=false issued=false
+    local -a extra_args=()
     echo -e "${yellow}请选择 TLS 证书方式：${plain}"
-    echo -e "${green}1. Let's Encrypt HTTP-01（默认，启动后自动申请和续期）${plain}"
-    echo -e "${green}2. Let's Encrypt DNS-01（Cloudflare API Token，支持 NAT）${plain}"
+    echo -e "${green}1. Let's Encrypt HTTP-01（默认，无需 Cloudflare Token）${plain}"
+    echo -e "${green}2. Let's Encrypt DNS-01（可选，Cloudflare API Token）${plain}"
     echo -e "${green}3. self 自签名证书（仅测试，客户端需单独信任）${plain}"
-    echo -e "${green}4. 使用已有证书文件（不自动续期）${plain}"
+    echo -e "${green}4. 使用已有证书文件（由原方式维护）${plain}"
     if [[ "$NodeType" == "hysteria2" ]]; then
         echo -e "${green}5. 自签名 + SHA256 固定证书（自动生成或复用）${plain}"
     fi
@@ -49,7 +71,7 @@ configure_node_tls() {
                    certmode="file"; hy2_pin_enabled=true; break
                fi
                echo "只有 hysteria2 可选择选项 5。" ;;
-            *) echo "选择无效，请输入 1-4。" ;;
+            *) echo "请选择以上列出的证书方式。" ;;
         esac
     done
 
@@ -60,28 +82,8 @@ configure_node_tls() {
         echo -e "${red}域名无效：请填写有 DNS 解析的完整域名，不含 https:// 和端口。${plain}"
     done
 
-    # Before prompting for ACME email or Cloudflare token, check a reusable cert.
-    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
-        local reuse_helper="/usr/local/V2bX/acme_cert_manager.py"
-        if [[ ! -f "$reuse_helper" ]]; then
-            reuse_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/acme_cert_manager.py"
-        fi
-        if [[ -f "$reuse_helper" ]] && command -v python3 >/dev/null 2>&1; then
-            echo -e "${yellow}正在检查此前为 $certdomain 签发的证书...${plain}"
-            if python3 "$reuse_helper" reuse --domain "$certdomain"; then
-                certmode="file"
-                certfile="/etc/letsencrypt/live/v2bx-$certdomain/fullchain.pem"
-                keyfile="/etc/letsencrypt/live/v2bx-$certdomain/privkey.pem"
-                certemail=""
-                certprovider=""
-                certdnsenv="{}"
-                echo -e "${green}有效证书已自动复用，跳过申请及 Cloudflare Token 输入。${plain}"
-                return 0
-            fi
-        fi
-    fi
     if [[ "${hy2_pin_enabled:-false}" == "true" ]]; then
-        local helper="/usr/local/V2bX/hy2_pin_manager.py"
+        helper="/usr/local/V2bX/hy2_pin_manager.py"
         if [[ ! -f "$helper" ]]; then
             helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/hy2_pin_manager.py"
         fi
@@ -104,100 +106,77 @@ configure_node_tls() {
         echo -e "${yellow}请将 Xboard SNI 同步设为 $hy2_sni，并确保订阅下发 pinSHA256。${plain}"
         return 0
     fi
+    if [[ "$certmode" == "self" ]]; then
+        echo -e "${yellow}自签名证书仅用于测试，不属于 Let's Encrypt。${plain}"
+        certfile="/etc/V2bX/certs/$certdomain/fullchain.cer"
+        keyfile="/etc/V2bX/certs/$certdomain/privkey.pem"
+        mkdir -p "/etc/V2bX/certs/$certdomain" && chmod 0700 "/etc/V2bX/certs/$certdomain"
+        return $?
+    fi
+
+    helper="/usr/local/V2bX/acme_cert_manager.py"
+    if [[ ! -f "$helper" ]]; then
+        helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/acme_cert_manager.py"
+    fi
+    if [[ ! -f "$helper" ]] || ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${red}缺少证书校验工具或 python3；未添加节点。${plain}"
+        return 1
+    fi
     if [[ "$certmode" == "file" ]]; then
-        while true; do
-            read -r -p "请输入现有 fullchain.pem/cert 文件绝对路径：" certfile || return 1
-            read -r -p "请输入现有私钥文件绝对路径：" keyfile || return 1
-            if [[ "$certfile" =~ ^/[A-Za-z0-9._/-]+$ && "$keyfile" =~ ^/[A-Za-z0-9._/-]+$ && -r "$certfile" && -r "$keyfile" ]]; then
-                break
-            fi
-            echo -e "${red}证书路径必须是可读取的绝对路径，且不含空格或特殊字符。${plain}"
-        done
-        echo "将使用已有证书，不会调用 Let's Encrypt 申请或续期。"
-        return 0
+        use_existing_node_certificate "$helper"
+        return $?
     fi
 
-    certfile="/etc/V2bX/certs/$certdomain/fullchain.cer"
-    keyfile="/etc/V2bX/certs/$certdomain/privkey.pem"
-    # lego upstream saves the ACME account and certificate key with permissive
-    # file modes: protect their parent directory before the service starts.
-    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
+    if python3 "$helper" reuse --domain "$certdomain"; then
+        issued=true
+    elif python3 "$helper" tracked --domain "$certdomain"; then
+        tracked=true
+        echo "发现 Certbot 续期配置，将保留已有验证方式和凭据。"
+    else
+        if [[ "$certmode" == "http" ]]; then
+            echo "HTTP-01 需要公网 TCP/80；已有站点时请选择实际服务挑战目录的 Webroot。"
+            read -r -p "已有站点 Webroot 绝对路径（回车仅在 TCP/80 空闲时用 standalone）：" webroot || return 1
+            if [[ -n "$webroot" ]]; then extra_args+=(--webroot "$webroot"); fi
+        fi
         while true; do
-            read -r -p "请输入 Let's Encrypt ACME 联系邮箱（非 Cloudflare 账户ID，可直接回车跳过）：" certemail || return 1
+            read -r -p "请输入 Let's Encrypt 联系邮箱（可回车跳过）：" certemail || return 1
             if [[ -z "$certemail" ]] || valid_tls_email "$certemail"; then break; fi
-            echo -e "${red}邮箱格式无效；请输入合法邮箱或直接回车跳过。${plain}"
+            echo -e "${red}邮箱格式无效，请重输。${plain}"
         done
-    fi
-
-    if [[ "$certmode" == "http" ]]; then
-        echo -e "${yellow}注意：HTTP-01 要求域名指向本节点，公网 TCP/80 可直接访问本机 80 端口。${plain}"
-        echo -e "${yellow}NAT/DDNS 仅映射高位端口时不能使用 HTTP-01，请改选 DNS-01。${plain}"
-        if command -v ss >/dev/null 2>&1 && [[ -n "$(ss -H -ltn 'sport = :80' 2>/dev/null)" ]]; then
-            echo -e "${red}警告：检测到本机 TCP/80 正在监听，V2bX 的 HTTP-01 申请可能因端口冲突失败！${plain}"
-        fi
-        if command -v getent >/dev/null 2>&1 && ! getent ahostsv4 "$certdomain" >/dev/null 2>&1; then
-            echo -e "${yellow}提示：未检测到域名的 IPv4 解析。请确认 DNS 后再启动 V2bX。${plain}"
-        fi
-    elif [[ "$certmode" == "dns" ]]; then
-        certprovider="cloudflare"
-        echo -e "${yellow}Cloudflare 新版账户令牌也通过 Token 认证；当前 lego DNS-01 无需填写 Account ID / Zone ID。${plain}"
-        echo -e "${yellow}需要 Cloudflare DNS 区域权限：Zone:Read、DNS:Edit。Token 将以明文写入仅 root 可读的 config.json。${plain}"
-        while true; do
-            read -r -s -p "请输入 CLOUDFLARE_DNS_API_TOKEN（隐藏输入）：" cf_token || return 1
-            echo
-            if [[ "$cf_token" =~ ^[A-Za-z0-9_-]+$ ]]; then break; fi
-            echo -e "${red}Token 格式无效，不能留空或包含空格/引号。${plain}"
-        done
-        certdnsenv="{\"CLOUDFLARE_DNS_API_TOKEN\":\"$cf_token\"}"
-        # Keep token only in function scope until the real ACME attempt completes.
-    elif [[ "$certmode" == "self" ]]; then
-        echo -e "${yellow}自签名证书仅用于测试环境，不属于 Let's Encrypt。${plain}"
-    fi
-    # ACME preflight is synchronous. Do not add a node until we have a valid certificate.
-    if [[ "$certmode" == "http" || "$certmode" == "dns" ]]; then
-        local acme_helper="/usr/local/V2bX/acme_cert_manager.py"
-        if [[ ! -f "$acme_helper" ]]; then
-            acme_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools/acme_cert_manager.py"
-        fi
-        if [[ ! -f "$acme_helper" ]]; then
-            echo -e "${red}未找到同步 ACME 工具，取消添加节点。请更新安装脚本。${plain}"
-            return 1
-        fi
-        if ! python3 "$acme_helper" deps --mode "$certmode"; then
-            echo -e "${red}签发依赖检查失败，节点未添加。${plain}"
-            return 1
-        fi
-        echo -e "${yellow}正在执行真实 Let's Encrypt 申请与证书验证...${plain}"
         if [[ "$certmode" == "dns" ]]; then
-            if ! printf "%s\n" "$cf_token" | python3 "$acme_helper" issue --mode dns --domain "$certdomain" --email "$certemail"; then
-                unset cf_token certdnsenv
-                echo -e "${red}证书申请失败，当前节点未添加；请检查日志。${plain}"
-                return 1
-            fi
-        else
-            if ! python3 "$acme_helper" issue --mode http --domain "$certdomain" --email "$certemail"; then
-                echo -e "${red}证书申请失败，当前节点未添加；请检查日志。${plain}"
-                return 1
+            echo "Cloudflare DNS-01 需要对应 Zone 的 Zone:Read 与 DNS:Edit，Token 不写入节点配置。"
+            read -r -s -p "Cloudflare DNS API Token（隐藏输入）：" cf_token || return 1
+            echo
+            [[ "$cf_token" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+        fi
+    fi
+    if [[ "$issued" != true ]]; then
+        if [[ "$tracked" == true ]] || python3 "$helper" deps --mode "$certmode"; then
+            if [[ "$certmode" == "dns" && "$tracked" != true ]]; then
+                if printf '%s\n' "$cf_token" | python3 "$helper" issue --mode dns --domain "$certdomain" --email "$certemail"; then
+                    issued=true
+                fi
+            elif python3 "$helper" issue --mode "$certmode" --domain "$certdomain" --email "$certemail" "${extra_args[@]}"; then
+                issued=true
             fi
         fi
         unset cf_token
-        # Certbot maintains its own automatic renewals. Read verified files via file mode;
-        # never make V2bX run another ACME client against the same certificate.
-        certmode="file"
-        certfile="/etc/letsencrypt/live/v2bx-$certdomain/fullchain.pem"
-        keyfile="/etc/letsencrypt/live/v2bx-$certdomain/privkey.pem"
-        certprovider=""
-        certdnsenv="{}"
-        echo -e "${green}✓ 证书申请/验证成功，已改用 Certbot 证书文件模式。${plain}"
-        echo -e "${yellow}提示：Certbot 将负责续期；请配置续期后重载 V2bX。${plain}"
-        return 0
     fi
-    # Do not create the cert folder if user selected existing certificate.
-    if ! mkdir -p "/etc/V2bX/certs/$certdomain"; then
-        echo -e "${red}证书目录无法创建。${plain}"
-        return 1
+    if [[ "$issued" != true ]]; then
+        read -r -p "自动证书不可用，改用已有证书和私钥？[y/N]：" fallback || return 1
+        [[ "${fallback,,}" == y ]] || return 1
+        use_existing_node_certificate "$helper"
+        return $?
     fi
-    chmod 0700 "/etc/V2bX/certs/$certdomain" || return 1
+
+    paths="$(python3 "$helper" paths --domain "$certdomain")" || return 1
+    IFS='|' read -r certfile keyfile <<< "$paths"
+    [[ -n "$certfile" && -n "$keyfile" ]] || return 1
+    certmode="file"
+    certemail=""
+    certprovider=""
+    certdnsenv="{}"
+    echo -e "${green}已校验证书；使用文件模式，由 Certbot 按原验证方式续期。${plain}"
     return 0
 }
 

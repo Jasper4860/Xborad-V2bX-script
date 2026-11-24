@@ -2,6 +2,7 @@
 """Safely append Xboard AnyTLS nodes to a native V2bX sing-box configuration."""
 import argparse
 import copy
+from getpass import getpass
 import json
 import socket
 import subprocess
@@ -179,11 +180,11 @@ def acme_file_paths(directory, node_id, cert_domain):
 
 def ask_choice():
     print("\n请选择 TLS 证书方式：")
-    print("  1. Let's Encrypt HTTP-01 自动申请（公网 TCP/80 必须能访问本机）")
-    print("  2. Let's Encrypt DNS-01（Cloudflare，适合 NAT，无需公网 80）")
+    print("  1. Let's Encrypt HTTP-01（默认，无需 Cloudflare Token，公网 TCP/80）")
+    print("  2. Let's Encrypt DNS-01（可选，Cloudflare API Token）")
     print("  3. 使用服务器上已有的证书和私钥")
     while True:
-        value = input("请输入 [1/2/3]（默认 3）：").strip() or "3"
+        value = input("请输入 [1/2/3]（默认 1）：").strip() or "1"
         if value in ("1", "2", "3"):
             return value
         print("输入无效，请选择 1、2 或 3。")
@@ -215,61 +216,63 @@ def main():
         raise ConfigError("Node ID 必须是有效正整数")
     node_id = int(raw_id)
     domain = validate_domain(input("请输入 TLS 证书域名（例如 jp.example.com）："))
-    # Read-only preflight: a valid previous Certbot lineage needs no new ACME call.
+    mode, email, provider, env = "file", "", "", {}
     acme_tool = Path("/usr/local/V2bX/acme_cert_manager.py")
     if not acme_tool.is_file():
         acme_tool = Path(__file__).with_name("acme_cert_manager.py")
-    reused = False
-    if acme_tool.is_file():
-        print("正在检查服务器是否已有可复用的 Let\u0027s Encrypt 证书...")
-        reusable = subprocess.run([sys.executable, str(acme_tool), "reuse", "--domain", domain], check=False)
-        reused = reusable.returncode == 0
-    if reused:
-        mode, email, provider, env = "file", "", "", {}
-        cert_file = "/etc/letsencrypt/live/v2bx-%s/fullchain.pem" % domain
-        key_file = "/etc/letsencrypt/live/v2bx-%s/privkey.pem" % domain
-        print("已自动复用证书，无需输入 Cloudflare Token。")
-    else:
-        choice = ask_choice()
-        mode, email, provider, env = "file", "", "", {}
-        if choice == "3":
-            print("已有证书需要填写服务器上的真实绝对路径（以 / 开头）。")
-            print("例如：/etc/letsencrypt/live/jp.example.com/fullchain.pem")
-            print("      /etc/letsencrypt/live/jp.example.com/privkey.pem")
-            cert_file = input("请输入 fullchain 证书绝对路径：").strip()
-            key_file = input("请输入 private key 私钥绝对路径：").strip()
-        else:
-            acme_tool = Path("/usr/local/V2bX/acme_cert_manager.py")
-            if not acme_tool.is_file():
-                acme_tool = Path(__file__).with_name("acme_cert_manager.py")
-            if not acme_tool.is_file():
-                raise ConfigError("找不到同步证书申请工具，请更新 V2bX 脚本")
-            mode = "http" if choice == "1" else "dns"
-            email = input("请输入 Let\u0027s Encrypt 联系邮箱（可回车跳过）：").strip()
-            token = ""
-            if mode == "dns":
-                print("Cloudflare Token 需要 Zone:Read 与 DNS:Edit 权限，且域名必须由你管理。")
-                token = input("请输入 Cloudflare DNS API Token（可见，请勿截图）：").strip()
-                if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
-                    raise ConfigError("Cloudflare Token 格式不正确")
-            if input("是否现在实时申请证书？失败则不添加节点。[y/N]：").strip().lower() != "y":
+    if not acme_tool.is_file():
+        raise ConfigError("找不到证书申请/校验工具，请更新 V2bX 脚本")
+    helper = [sys.executable, str(acme_tool)]
+    choice = ask_choice()
+    use_manual = choice == "3"
+    if not use_manual:
+        reused = subprocess.run([*helper, "reuse", "--domain", domain], check=False).returncode == 0
+        if not reused:
+            requested_mode = "http" if choice == "1" else "dns"
+            tracked = subprocess.run([*helper, "tracked", "--domain", domain], check=False).returncode == 0
+            token, email, extra_args = "", "", []
+            if tracked:
+                print("将沿用已保存的 Certbot 验证方式和凭据。")
+            else:
+                if requested_mode == "http":
+                    print("HTTP-01 需要公网 TCP/80；已有站点时请选择实际服务挑战目录的 Webroot。")
+                    webroot = input("已有站点 Webroot 绝对路径（回车仅在 TCP/80 空闲时用 standalone）：").strip()
+                    if webroot:
+                        extra_args.extend(("--webroot", webroot))
+                email = input("请输入 Let's Encrypt 联系邮箱（可回车跳过）：").strip()
+                if requested_mode == "dns":
+                    print("Cloudflare DNS-01 需要对应 Zone 的 Zone:Read 和 DNS:Edit；凭据不写入节点配置。")
+                    token = getpass("Cloudflare DNS API Token（隐藏输入）：").strip()
+                    if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+                        raise ConfigError("Cloudflare Token 格式不正确")
+            if input("是否现在执行 Certbot 申请或续期？[y/N]：").strip().lower() != "y":
                 print("已取消：未修改配置")
                 return 0
-            dep = subprocess.run([sys.executable, str(acme_tool), "deps", "--mode", mode], check=False)
-            if dep.returncode:
-                raise ConfigError("证书组件检查失败；未添加节点")
-            cmd = [sys.executable, str(acme_tool), "issue", "--mode", mode,
-                   "--domain", domain, "--email", email]
-            actual = subprocess.run(cmd, input=(token + "\n" if mode == "dns" else None),
-                                    text=True, check=False)
-            if actual.returncode:
-                raise ConfigError("Let\u0027s Encrypt 证书验证/申请失败；未添加节点")
-            cert_file = "/etc/letsencrypt/live/v2bx-%s/fullchain.pem" % domain
-            key_file = "/etc/letsencrypt/live/v2bx-%s/privkey.pem" % domain
-            mode = "file"  # certbot manages renewal; V2bX consumes existing files
-            email = ""
-            provider = ""
-            env = {}
+            dependencies_ok = tracked or subprocess.run(
+                [*helper, "deps", "--mode", requested_mode], check=False).returncode == 0
+            issued = dependencies_ok and subprocess.run(
+                [*helper, "issue", "--mode", requested_mode, "--domain", domain, "--email", email, *extra_args],
+                input=(token + "\n" if token else None), text=True, check=False,
+            ).returncode == 0
+            token, email = "", ""
+            if not issued:
+                use_manual = input("自动证书不可用，改用已有证书和私钥？[y/N]：").strip().lower() == "y"
+                if not use_manual:
+                    print("没有有效证书：未修改配置")
+                    return 1
+        if not use_manual:
+            paths = subprocess.run([*helper, "paths", "--domain", domain], stdout=subprocess.PIPE,
+                                   text=True, check=False)
+            cert_file, separator, key_file = paths.stdout.strip().partition("|")
+            if paths.returncode or not separator or not cert_file or not key_file:
+                raise ConfigError("未找到已验证的证书路径；未添加节点")
+    if use_manual:
+        cert_file = input("请输入现有 fullchain 证书绝对路径：").strip()
+        key_file = input("请输入现有 private key 私钥绝对路径：").strip()
+        if subprocess.run([*helper, "validate", "--domain", domain, "--cert", cert_file, "--key", key_file],
+                          check=False).returncode:
+            raise ConfigError("现有证书校验失败；未添加节点")
+        print("使用已有证书；本向导不会接管其续期。")
     node = build_node(host, api_key, node_id, domain, mode, cert_file, key_file,
                       email=email, provider=provider, dns_env=env)
     updated, needs_core = build_updated(existing, node, args.config.parent)
@@ -286,8 +289,6 @@ def main():
     print("配置写入完成。备份文件：%s" % backup)
     print("执行 V2bX anytls-check 查看本地配置。")
     print("在测试环境确认无误后，手动执行 systemctl restart V2bX。")
-    if mode in ("http", "dns"):
-        print("Let's Encrypt 将由 V2bX 启动时申请；此时尚未签发证书。")
     return 0
 
 

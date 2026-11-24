@@ -115,7 +115,9 @@ class AcmeTests(unittest.TestCase):
     def test_issuance_failure_restores_secrets(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            with patch.object(acme, "dependencies_ready", return_value=True), \
+            with patch.object(acme.os, "geteuid", return_value=0), \
+                 patch.object(acme, "require_automatic_renewal", create=True), \
+                 patch.object(acme, "dependencies_ready", return_value=True), \
                  patch.object(acme, "verify_cloudflare_zone", return_value="wuya.me"), \
                  patch.object(acme, "credentials_file", return_value=root / "cf.ini"), \
                  patch.object(acme, "run_certbot", side_effect=acme.AcmeError("acme failed")):
